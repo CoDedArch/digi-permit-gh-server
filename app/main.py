@@ -8,6 +8,9 @@ from app.api.v1.routers.inspections import router as inspection_router
 from app.api.v1.routers.payments import router as payment_router
 from app.api.v1.routers.reviews import router as review_router
 from app.api.v1.routers.users import router as users_router
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 import logging
 from contextlib import asynccontextmanager
@@ -15,6 +18,7 @@ from contextlib import asynccontextmanager
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,6 +48,10 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=[Depends(aget_db)]  # Auto-inject db session to all routes
 )
+
+# configure Limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS Configuration
 app.add_middleware(

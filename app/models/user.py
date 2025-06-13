@@ -17,11 +17,6 @@ class UnverifiedUser(Base, TimestampMixin):
     is_locked = Column(Boolean, default=False)
     lock_expires = Column(DateTime)
     
-    # Temporary profile data
-    first_name = Column(String(100))
-    last_name = Column(String(100))
-    password_hash = Column(String(255))
-    
     def __repr__(self):
         return f"<UnverifiedUser {self.email or self.phone}>"
 
