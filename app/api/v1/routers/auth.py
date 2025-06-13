@@ -1,24 +1,49 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.schemas.AthenticationSchemas import SendOtpRequest, VerifyOtpRequest
+from app.core.database import aget_db
+from app.services.otpService import OtpService
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 
 router = APIRouter(
     prefix="/auth",
     tags=["auth"]
 )
 
-@router.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()) -> Any:
-    # Dummy authentication logic, replace with real user validation
-    if form_data.username == "admin" and form_data.password == "password":
-        return {"access_token": "fake-jwt-token", "token_type": "bearer"}
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Incorrect username or password",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+otp_service = OtpService()
+limiter = Limiter(key_func=get_remote_address)
 
-@router.post("/logout")
-async def logout() -> Any:
-    # Implement logout logic if needed (e.g., token blacklist)
-    return {"msg": "Successfully logged out"}
+@router.post("/send-otp", status_code=200)
+@limiter.limit("3/minute")
+async def send_otp(
+    request: Request,
+    payload: SendOtpRequest,
+    db: AsyncSession = Depends(aget_db)
+):
+    try:
+        await otp_service.send_otp(payload.contact, payload.channel, db)
+        return {"message": f"OTP sent via {payload.channel}"}, status.HTTP_200_OK
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to send OTP")
+
+
+@router.post("/verify-otp", status_code=200)
+@limiter.limit("3/minute")
+async def verify_otp(
+    request: Request,
+    payload: VerifyOtpRequest,
+    db: AsyncSession = Depends(aget_db)
+):
+    is_valid = await otp_service.verify_otp(payload.contact, payload.otp, db)
+
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP"
+        )
+
+    return {"message": "OTP verified successfully"}
