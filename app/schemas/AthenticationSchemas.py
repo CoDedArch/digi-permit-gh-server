@@ -13,10 +13,11 @@ class SendOtpRequest(BaseModel):
         return v
 
     @validator("contact", pre=True)
-    def normalize_contact_value(cls, v, values):
-        channel = values.get("channel")
+    def normalize_contact_value(cls, v):
+        channel = "email" if "@" in v else "sms"
         if channel:
-            return normalize_contact(v, channel)
+            normalized_contact = normalize_contact(v, channel)
+            return normalized_contact
         return v
 
 
@@ -27,5 +28,5 @@ class VerifyOtpRequest(BaseModel):
     @validator("contact", pre=True)
     def normalize_contact_value(cls, v):
         # Default to 'sms' for VerifyOtpRequest if no channel field
-        from app.utils.contact_utils import normalize_contact
-        return normalize_contact(v, "sms")
+        channel = "email" if "@" in v else "sms"
+        return normalize_contact(v, channel)

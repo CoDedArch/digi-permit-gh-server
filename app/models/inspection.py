@@ -19,10 +19,15 @@ class Inspection(Base, TimestampMixin):
     recommendations = Column(Text)
     violations_found = Column(Text)
     is_reinspection = Column(Boolean, default=False)
-    
+    assigned_officer_id = Column(Integer, ForeignKey('users.id'))
     # Relationships
     application = relationship("PermitApplication", back_populates="inspections")
-    inspection_officer = relationship("User", back_populates="assigned_inspections")
+    inspection_officer = relationship(
+    "User",
+    back_populates="assigned_inspections",
+    foreign_keys=[inspection_officer_id]
+    )
+
     
     def __repr__(self):
         return f"<Inspection {self.inspection_type.value} for App {self.application_id}>"

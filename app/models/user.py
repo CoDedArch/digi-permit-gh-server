@@ -41,7 +41,19 @@ class User(Base, TimestampMixin):
     profile = relationship("UserProfile", uselist=False, back_populates="user")
     documents = relationship("UserDocument", back_populates="user")
     applications = relationship("PermitApplication", back_populates="applicant")
-    
+    assigned_inspections = relationship(
+    "Inspection",
+    back_populates="inspection_officer",
+    foreign_keys="Inspection.inspection_officer_id"
+    )
+    assigned_reviews = relationship(
+    "ApplicationReview",
+    back_populates="review_officer",
+    foreign_keys="ApplicationReview.review_officer_id"
+    )
+
+
+
     @property
     def can_apply_for_permit(self) -> bool:
         """Check if user has completed all verification steps"""
@@ -77,13 +89,13 @@ class UserDocument(Base, TimestampMixin):
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     document_type = Column(String(50), nullable=False)
     file_url = Column(String(255), nullable=False)
-    verification_status = Column(String(20), default="pending")
-    verified_by = Column(Integer, ForeignKey('users.id'))
-    verified_at = Column(DateTime)
-    rejection_reason = Column(String(255))
     
-    user = relationship("User", back_populates="documents")
-    verifier = relationship("User", foreign_keys=[verified_by])
+    
+    user = relationship(
+        "User", 
+        back_populates="documents",
+        foreign_keys=[user_id] 
+    )
     
     def __repr__(self):
         return f"<UserDocument {self.document_type} for User {self.user_id}>"

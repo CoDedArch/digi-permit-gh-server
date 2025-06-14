@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.AthenticationSchemas import SendOtpRequest, VerifyOtpRequest
 from app.core.database import aget_db
@@ -24,7 +25,10 @@ async def send_otp(
 ):
     try:
         await otp_service.send_otp(payload.contact, payload.channel, db)
-        return {"message": f"OTP sent via {payload.channel}"}, status.HTTP_200_OK
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"message": f"OTP sent via {payload.channel}"}
+        )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
