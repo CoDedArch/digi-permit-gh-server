@@ -1,35 +1,45 @@
-# services/sms_service.py
-
 import os
-from twilio.rest import Client
+import httpx
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TWILIO_SID = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_FROM = os.getenv("TWILIO_PHONE_NUMBER")
+ARKESEL_API_KEY = os.getenv("ARKESEL_API_KEY")
+ARKESEL_SENDER_ID = os.getenv("ARKESEL_SENDER_ID", "DigiPermit")
 
 
-def send_sms_otp(contact: str, otp: str):
-    if not all([TWILIO_SID, TWILIO_AUTH, TWILIO_FROM]):
-        raise EnvironmentError("Missing Twilio environment variables")
+def format_number(number: str) -> str:
+    return number.strip().replace(" ", "").replace("+", "")
 
-    client = Client(TWILIO_SID, TWILIO_AUTH)
+
+async def send_sms_otp(contact: str, otp: str):
+    if not ARKESEL_API_KEY:
+        raise EnvironmentError("Missing Arkesel API key")
+
+    formatted_contact = format_number(contact)
 
     message_body = (
         f"Digi-Permit OTP: {otp}\n"
         f"This code expires in 5 minutes.\n\n"
         f"Akan: Wo nhyehyɛe kɔd ne {otp}. Ebɛyɛ adwuma mmerɛ 5 pɛ."
     )
+    encoded_message = quote_plus(message_body)
+
+    url = (
+        f"https://sms.arkesel.com/sms/api"
+        f"?action=send-sms"
+        f"&api_key={ARKESEL_API_KEY}"
+        f"&to={formatted_contact}"
+        f"&from={ARKESEL_SENDER_ID}"
+        f"&sms={encoded_message}"
+    )
 
     try:
-        message = client.messages.create(
-            body=message_body,
-            from_=TWILIO_FROM,
-            to=contact
-        )
-        print(f"[SMS] OTP sent to {contact}: SID={message.sid}")
-    except Exception as e:
-        print(f"[SMS ERROR] Failed to send OTP to {contact}: {e}")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            print(f"[SMS] OTP sent to {formatted_contact}: {response.text}")
+    except httpx.HTTPError as e:
+        print(f"[SMS ERROR] Failed to send OTP to {formatted_contact}: {e}")
         raise

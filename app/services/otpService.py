@@ -15,15 +15,18 @@ class OtpService:
     async def generate_otp(self, email_or_phone: str, db: AsyncSession) -> str:
         otp = str(secrets.randbelow(900000) + 100000)
         expires_at = datetime.utcnow() + timedelta(minutes=OTP_EXPIRY_MINUTES)
-
-        result = await db.execute(
-            select(UnverifiedUser).where(
-                (UnverifiedUser.email == email_or_phone) |
-                (UnverifiedUser.phone == email_or_phone)
+        try:
+            result = await db.execute(
+                select(UnverifiedUser).where(
+                    (UnverifiedUser.email == email_or_phone) |
+                    (UnverifiedUser.phone == email_or_phone)
+                )
             )
-        )
-        user = result.scalar_one_or_none()
-
+            user = result.scalar_one_or_none()
+        except Exception as e:
+            print(f"Query failed: {type(e).__name__}: {e}")
+            raise
+        
         if not user:
             user = UnverifiedUser(
                 email=email_or_phone if "@" in email_or_phone else None,
@@ -37,6 +40,7 @@ class OtpService:
             )
             db.add(user)
         else:
+            print("there is a user")
             user.otp_secret = otp
             user.otp_expires = expires_at
             user.verification_attempts = 0
@@ -49,7 +53,6 @@ class OtpService:
     async def send_otp (self, contact: str,  channel:str, db: AsyncSession ):
         if channel not in ["email", "sms"]:
             raise ValueError("Invalid channel")
-
         # generate the otp
         otp = await self.generate_otp(contact, db)
 

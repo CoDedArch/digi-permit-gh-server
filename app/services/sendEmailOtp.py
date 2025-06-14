@@ -1,22 +1,21 @@
 # services/email_service.py
 
 import os
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from postmarker.core import PostmarkClient
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SENDER_EMAIL = os.getenv("SENDGRID_SENDER_EMAIL")
-
+POSTMARK_API_TOKEN = os.getenv("POSTMARK_API_TOKEN")
+SENDER_EMAIL = os.getenv("POSTMARK_SENDER_EMAIL")  # e.g., verified@yourdomain.com
 
 DIGI_PERMIT_LOGO_URL = "https://your-cdn.com/static/digi-permit-logo.png"  # Replace with actual image URL
 
+if not POSTMARK_API_TOKEN or not SENDER_EMAIL:
+    raise ValueError("POSTMARK_API_TOKEN or POSTMARK_SENDER_EMAIL is not set")
+
 
 async def send_email_otp(email: str, code: str):
-    if not SENDER_EMAIL:
-        raise ValueError("SENDGRID_SENDER_EMAIL is not set")
-
     html_content = f"""
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
         <div style="text-align: center; margin-bottom: 20px;">
@@ -48,17 +47,15 @@ async def send_email_otp(email: str, code: str):
     </div>
     """
 
-    message = Mail(
-        from_email=SENDER_EMAIL,
-        to_emails=email,
-        subject="Digi-Permit OTP Code / Nhyehyɛe Kɔd",
-        html_content=html_content
-    )
-
     try:
-        sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
-        response = sg.send(message)
-        print(f"[EMAIL] Sent OTP {code} to {email}, status: {response.status_code}")
+        client = PostmarkClient(server_token=POSTMARK_API_TOKEN)
+        response = client.emails.send(
+            From=SENDER_EMAIL,
+            To=email,
+            Subject="Digi-Permit OTP Code / Nhyehyɛe Kɔd",
+            HtmlBody=html_content
+        )
+        print(f"[EMAIL] Sent OTP {code} to {email}, status: {response['Message']}")
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send OTP to {email}: {e}")
         raise
