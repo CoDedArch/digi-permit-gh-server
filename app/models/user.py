@@ -24,12 +24,11 @@ class User(Base, TimestampMixin):
     __tablename__ = 'users'
     
     id = Column(Integer, primary_key=True)
-    email = Column(String(255), unique=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100), nullable=False)
+    email = Column(String(255), unique=True)
+    first_name = Column(String(100))
+    last_name = Column(String(100))
     other_name = Column(String(100))
-    phone = Column(String(20), unique=True, nullable=False)
+    phone = Column(String(20), unique=True)
     alt_phone = Column(String(20), unique=True)
     is_active = Column(Boolean, default=False)  # Disabled until Ghana Card verification
     preferred_verification = Column(String(10), default='email')
