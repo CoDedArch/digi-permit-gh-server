@@ -1,4 +1,5 @@
 import enum
+from sqlalchemy.sql import exists
 
 class PermitType(enum.Enum):
     # Core Types from Ghanaian Regulations
@@ -54,7 +55,7 @@ class DocumentType(enum.Enum):
     IDENTIFICATION = "identification"
     ENGINEER_REPORT = "engineer_report"
     OTHER = "other"
-
+    
 class DocumentStatus(enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
