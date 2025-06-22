@@ -14,6 +14,8 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 import logging
 from contextlib import asynccontextmanager
+from app.core.config import settings
+from scripts.seed_db import seed_all, needs_seeding
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,25 +24,56 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Async context manager for app lifespan events"""
+    """Async context manager for app lifespan events with integrated seeding"""
     # Startup
     try:
-        logger.info("Initializing database...")
+        logger.info("🚀 Starting application initialization...")
+        
+        # 1. Initialize database connection pool
+        logger.info("🔌 Initializing database connection pool...")
         await session_manager.init()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Database connection pool ready")
+        
+        # 2. Conditionally seed database
+        if settings.SEED_ON_STARTUP:
+            logger.info("🌱 Checking database seeding requirements...")
+            async with session_manager.session() as db:
+                try:
+                    if await needs_seeding(db) or settings.FORCE_SEED:
+                        logger.info("🛠 Starting database seeding...")
+                        await seed_all(db)
+                        logger.info("🎉 Database seeding completed successfully")
+                    else:
+                        logger.info("⏩ Database already seeded, skipping")
+                except Exception as e:
+                    logger.error(f"❌ Database seeding failed: {str(e)}")
+                    if settings.REQUIRE_SEED:
+                        raise RuntimeError("Critical seeding failed") from e
+                    logger.warning("⚠️ Continuing with potentially incomplete data")
+        else:
+            logger.info("⏭ Database seeding disabled (SEED_ON_STARTUP=False)")
+            
     except Exception as e:
-        logger.error(f"Database initialization failed: {str(e)}")
+        logger.critical(f"🔥 Application startup failed: {str(e)}")
         raise
     
-    yield  # App runs here
-    
-    # Shutdown
+    # Application runtime
     try:
-        logger.info("Closing database connections...")
-        await session_manager.close()
-        logger.info("Database connections closed")
-    except Exception as e:
-        logger.error(f"Error closing database connections: {str(e)}")
+        logger.info("🏁 Application startup complete")
+        yield
+    finally:
+        # Shutdown
+        try:
+            logger.info("🛑 Beginning application shutdown...")
+            logger.info("🔌 Closing database connections...")
+            await session_manager.close()
+            logger.info("✅ Database connections closed cleanly")
+        except Exception as e:
+            logger.error(f"⚠️ Error during shutdown: {str(e)}")
+            raise
+        finally:
+            logger.info("👋 Application shutdown complete")
+            
 
 app = FastAPI(
     title="DigiPermit GH",
@@ -56,7 +89,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For production, specify your frontend URLs
+    allow_origins=["http://localhost:3000"],  # For production, specify your frontend URLs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
