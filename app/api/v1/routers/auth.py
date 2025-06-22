@@ -1,5 +1,7 @@
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
+import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.AthenticationSchemas import SendOtpRequest, VerifyOtpRequest
 from authlib.integrations.starlette_client import OAuth
@@ -10,6 +12,8 @@ from slowapi.util import get_remote_address
 from app.services.otpService import OTPVerificationStatus
 import os
 from dotenv import load_dotenv
+from app.core.security import decode_jwt_token
+from app.core.config import settings
 
 load_dotenv()
 
@@ -65,48 +69,58 @@ async def verify_otp(
     payload: VerifyOtpRequest,
     db: AsyncSession = Depends(aget_db)
 ):
-    print("Formatted Response from the user", payload.contact, payload.otp)
+    user_remember_me = payload.remember
 
-    verification_status = await otp_service.verify_otp(payload.contact, payload.otp, db)
+    result = await otp_service.verify_otp(payload.contact, payload.otp, user_remember_me, db)
+    print("results is")
+    status = result.get("status")
 
-    if verification_status == OTPVerificationStatus.SUCCESS:
-        return {"message": "OTP verified successfully"}
+    if status == OTPVerificationStatus.SUCCESS:
+        token = result["token"]
+        onboarding = result['onboarding']
+        role = result["role"]
 
-    elif verification_status == OTPVerificationStatus.NOT_FOUND:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+        print("role is", role)
+
+        response = JSONResponse( {
+            "message": "OTP verified successfully",
+            "onboarding": onboarding,
+            "role": role
+        })
+
+        expires = timedelta(days=30) if user_remember_me else timedelta(hours=1)
+
+        response.set_cookie(
+            key="auth_token",
+            value=token,
+            httponly=True,
+            secure=True,  # Must be True for production
+            samesite="none",
+            domain="localhost",  # Explicit domain for local development
+            path="/",  # Make cookie available for all paths
+            max_age=int(expires.total_seconds())
         )
 
-    elif verification_status == OTPVerificationStatus.CODE_EXPIRED:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The verification code has expired. Please request a new one."
-        )
+        response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
 
-    elif verification_status == OTPVerificationStatus.CODE_INVALID:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid verification code. Please try again."
-        )
+        print("Cookie set in response:", response.headers.get("set-cookie"))
 
-    elif verification_status == OTPVerificationStatus.MAX_ATTEMPTS:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Too many incorrect attempts. You have been temporarily locked out."
-        )
+        return response
 
-    elif verification_status == OTPVerificationStatus.LOCKED:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account is temporarily locked. Please try again later."
-        )
+    if status == OTPVerificationStatus.LOCKED:
+        raise HTTPException(403, "You are temporarily locked. Please try again later.")
+    if status == OTPVerificationStatus.CODE_EXPIRED:
+        raise HTTPException(400, "OTP has expired.")
+    if status == OTPVerificationStatus.CODE_INVALID:
+        raise HTTPException(400, "Invalid OTP.")
+    if status == OTPVerificationStatus.MAX_ATTEMPTS:
+        raise HTTPException(403, "Too many failed attempts. You are now locked.")
+    if status == OTPVerificationStatus.NOT_FOUND:
+        raise HTTPException(404, "OTP session not found.")
 
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred"
-        )
+    raise HTTPException(500, "Unexpected error")
+        
 
 
 # Google login endpoint
@@ -138,3 +152,46 @@ async def google_callback(request: Request, db: AsyncSession = Depends(aget_db))
 
     except Exception as e:
         raise HTTPException(status_code=400, detail="Google login failed")
+    
+# Create an Auth Me Route for the users
+
+@router.get("/me")
+async def get_current_user(request: Request):
+    token = request.cookies.get("auth_token")
+    print("Raw token from cookies:", token)
+    
+    if not token:
+        print("No token found in cookies")
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = decode_jwt_token(token)
+        print("Decoded payload:", payload)
+        
+        if not payload.get("sub"):
+            print("No subject in payload")
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+            
+        return {
+            "authenticated": True,
+            "user_id": payload.get("sub"),
+            "onboarding": payload.get("onboarding", False),
+            "role": payload.get("role", "applicant")
+        }
+        
+    except jwt.ExpiredSignatureError:
+        print("Token expired")
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError as e:
+        print(f"Invalid token: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    
+# Simple but Powerful Logout
+@router.post("/logout")
+async def logout():
+    response = JSONResponse({"message": "Logged out"})
+    response.delete_cookie("auth_token")
+    return response
