@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = os.getenv("EMAIL_FROM", "no-reply@versecatch.pro")
     BASE_URL: str = os.getenv("BASE_URL")
     PAYSTACK_SECRET_KEY: str = os.getenv("PAYSTACK_SECRET_KEY")
-    DATA_DIR: str = Field(default="../../data",env="DATA_DIR") 
+    DATA_DIR: str = Field(default="../../data",env="DATA_DIR")
+    SEED_ON_STARTUP: bool = Field(True, env="SEED_ON_STARTUP")
+    FORCE_SEED: bool = Field(False, env="FORCE_SEED")  # Ignore existing data
+    REQUIRE_SEED: bool = Field(False, env="REQUIRE_SEED")  # Crash if seeding fails
     DB_MODELS: ClassVar[List[str]] = [
         "app.models.application",
         "app.models.document",
