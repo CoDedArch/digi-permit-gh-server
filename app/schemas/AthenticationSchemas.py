@@ -24,6 +24,7 @@ class SendOtpRequest(BaseModel):
 class VerifyOtpRequest(BaseModel):
     contact: str
     otp: str
+    remember: bool
 
     @validator("contact", pre=True)
     def normalize_contact_value(cls, v):
