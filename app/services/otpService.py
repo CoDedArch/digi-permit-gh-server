@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+from app.models.user import User
+from app.core.constants import UserRole, VerificationStage
 from fastapi.exceptions import HTTPException
 import secrets
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from app.models.user import UnverifiedUser
 from app.services.sendEmailOtp import send_email_otp
 from app.services.sendSmsOtp import send_sms_otp
 from enum import Enum
+from app.core.security import create_jwt_token
 
 MAX_ATTEMPTS = 5
 LOCK_DURATION_MINUTES = 15
@@ -84,38 +87,77 @@ class OtpService:
         else:
             await send_sms_otp(contact, otp)
 
-    async def verify_otp(self, email_or_phone: str, input_code: str, db: AsyncSession) -> OTPVerificationStatus:
+    async def verify_otp(self, email_or_phone: str, input_code: str, remember: bool, db: AsyncSession) -> OTPVerificationStatus:
         result = await db.execute(
             select(UnverifiedUser).where(
                 (UnverifiedUser.email == email_or_phone) |
                 (UnverifiedUser.phone == email_or_phone)
             )
         )
-        user = result.scalar_one_or_none()
+        unverified_user = result.scalar_one_or_none()
 
         now = datetime.utcnow()
 
-        if not user:
-            return OTPVerificationStatus.NOT_FOUND
+        if not unverified_user:
+            return {"status": OTPVerificationStatus.NOT_FOUND}
 
-        if user.is_locked and user.lock_expires and user.lock_expires > now:
-            return OTPVerificationStatus.LOCKED
+        if unverified_user.is_locked and unverified_user.lock_expires and unverified_user.lock_expires > now:
+            return {"status": OTPVerificationStatus.LOCKED}
 
-        if user.otp_expires < now:
-            return OTPVerificationStatus.CODE_EXPIRED
+        if unverified_user.otp_expires < now:
+            return {"status": OTPVerificationStatus.CODE_EXPIRED}
 
-        if user.otp_secret != input_code:
-            user.verification_attempts += 1
-            if user.verification_attempts >= MAX_ATTEMPTS:
-                user.is_locked = True
-                user.lock_expires = now + timedelta(minutes=LOCK_DURATION_MINUTES)
-                await db.commit()
-                return OTPVerificationStatus.MAX_ATTEMPTS
-
+        if unverified_user.otp_secret != input_code:
+            unverified_user.verification_attempts += 1
+            if unverified_user.verification_attempts >= MAX_ATTEMPTS:
+                unverified_user.is_locked = True
+                unverified_user.lock_expires = now + timedelta(minutes=LOCK_DURATION_MINUTES)
             await db.commit()
-            return OTPVerificationStatus.CODE_INVALID
+            return {
+            "status": OTPVerificationStatus.MAX_ATTEMPTS 
+            if unverified_user.is_locked else OTPVerificationStatus.CODE_INVALID
+            }
 
-        # OTP is correct
-        await db.delete(user)
+
+        # IF OTP  is correct - CHECK if user Exists
+        user_query = await db.execute(
+            select(User).where(
+                (User.email == email_or_phone) | (User.phone == email_or_phone)
+            )
+        )
+
+        user = user_query.scalar_one_or_none()
+
+        # set Onboarding to False
+        onboarding = False
+        if not user:
+            user = User(
+                email=email_or_phone if "@" in email_or_phone else None,
+                phone=email_or_phone if "@" not in email_or_phone else None,
+                first_name=None,  # Will be collected during onboarding
+                last_name=None,
+                is_active=False,
+                preferred_verification="email" if "@" in email_or_phone else "sms",
+                role=UserRole.APPLICANT,
+                verification_stage=VerificationStage.OTP_VERIFIED,
+            )
+            db.add(user)
+            onboarding = True
+        # Clean Up the unverified user
+        await db.delete(unverified_user)
         await db.commit()
-        return OTPVerificationStatus.SUCCESS
+
+        # we'll issue a jwt token that last 1 hour
+        print("Remember is", remember)
+        if remember:
+            token = create_jwt_token({"sub": str(user.id), "onboarding": onboarding, "role": user.role.value}, expires_delta=timedelta(days=30))
+        else:
+            token = create_jwt_token({"sub": str(user.id), "onboarding": onboarding, "role": user.role.value}, expires_delta=timedelta(hours=1))
+
+
+        return {
+            "status": OTPVerificationStatus.SUCCESS,
+            "token": token,
+            "onboarding": onboarding,
+            "role": user.role.value
+        }
