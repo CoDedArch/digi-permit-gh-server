@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import session_manager, aget_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.routers.auth import router as auth_router
+from app.api.v1.routers.documents import router as document_router
 from app.api.v1.routers.application import router as application_router
 from app.api.v1.routers.inspections import router as inspection_router
 from app.api.v1.routers.payments import router as payment_router
@@ -115,6 +116,7 @@ async def health_check(db: AsyncSession = Depends(aget_db)):
 
 # Include routers
 app.include_router(auth_router, tags=["auth"])
+app.include_router(document_router, tags=["permits"])
 app.include_router(application_router, tags=["applications"])
 app.include_router(inspection_router, tags=["inspections"])
 app.include_router(payment_router, tags=["payments"])
