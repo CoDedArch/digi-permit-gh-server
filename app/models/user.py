@@ -1,7 +1,7 @@
-from sqlalchemy import Column, String, Integer, Enum, Boolean, ForeignKey, DateTime
+from sqlalchemy import JSON, Column, String, Integer, Enum, Boolean, ForeignKey, DateTime, Text
 from sqlalchemy.orm import relationship
 from app.models.base import Base, TimestampMixin
-from app.core.constants import UserRole, VerificationStage
+from app.core.constants import ReviewStatus, UserRole, VerificationStage
 import enum
 
 class UnverifiedUser(Base, TimestampMixin):
@@ -102,3 +102,103 @@ class UserDocument(Base, TimestampMixin):
 # Add to core/constants.py
 
 
+class MMDA(Base, TimestampMixin):
+    """Metropolitan/Municipal/District Assembly entity"""
+    __tablename__ = 'mmdas'
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)
+    type = Column(String(20), nullable=False)  # 'metropolitan', 'municipal', 'district'
+    region = Column(String(100), nullable=False)
+    contact_email = Column(String(255))
+    contact_phone = Column(String(20))
+    jurisdiction_boundaries = Column(JSON)  # GeoJSON polygon coordinates
+    
+    # Relationships
+    departments = relationship("Department", back_populates="mmda")
+    permit_applications = relationship("PermitApplication", back_populates="mmda")
+    committees = relationship("Committee", back_populates="mmda")
+    
+    def __repr__(self):
+        return f"<MMDA {self.name} ({self.type})>"
+
+class Department(Base, TimestampMixin):
+    """Departments under MMDAs (e.g., Physical Planning)"""
+    __tablename__ = 'departments'
+    
+    id = Column(Integer, primary_key=True)
+    mmda_id = Column(Integer, ForeignKey('mmdas.id'), nullable=False)
+    name = Column(String(100), nullable=False)  # e.g., "Physical Planning"
+    code = Column(String(10), unique=True)  # e.g., "PPD"
+    
+    # Relationships
+    mmda = relationship("MMDA", back_populates="departments")
+    staff = relationship("DepartmentStaff", back_populates="department")
+    
+    def __repr__(self):
+        return f"<Department {self.name} ({self.code})>"
+
+class DepartmentStaff(Base, TimestampMixin):
+    """Links users to departments with specific roles"""
+    __tablename__ = 'department_staff'
+    
+    id = Column(Integer, primary_key=True)
+    department_id = Column(Integer, ForeignKey('departments.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    position = Column(String(100))  # e.g., "Planning Officer"
+    is_head = Column(Boolean, default=False)
+    
+    # Relationships
+    department = relationship("Department", back_populates="staff")
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<DepartmentStaff {self.user_id} in {self.department_id}>"
+
+class Committee(Base, TimestampMixin):
+    """MMDA Committees (e.g., Works Sub-Committee)"""
+    __tablename__ = 'committees'
+    
+    id = Column(Integer, primary_key=True)
+    mmda_id = Column(Integer, ForeignKey('mmdas.id'), nullable=False)
+    name = Column(String(100), nullable=False)  # e.g., "Works Sub-Committee"
+    description = Column(Text)
+    
+    # Relationships
+    mmda = relationship("MMDA", back_populates="committees")
+    members = relationship("CommitteeMember", back_populates="committee")
+    reviews = relationship("CommitteeReview", back_populates="committee")
+    
+    def __repr__(self):
+        return f"<Committee {self.name}>"
+
+class CommitteeMember(Base, TimestampMixin):
+    """Members of MMDA committees"""
+    __tablename__ = 'committee_members'
+    
+    id = Column(Integer, primary_key=True)
+    committee_id = Column(Integer, ForeignKey('committees.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    role = Column(String(50))  # e.g., "Chairperson"
+    
+    # Relationships
+    committee = relationship("Committee", back_populates="members")
+    user = relationship("User")
+    
+    def __repr__(self):
+        return f"<CommitteeMember {self.user_id} in {self.committee_id}>"
+
+
+class CommitteeReview(Base, TimestampMixin):
+    __tablename__ = 'committee_reviews'
+    
+    id = Column(Integer, primary_key=True)
+    committee_id = Column(Integer, ForeignKey('committees.id'))
+    application_id = Column(Integer, ForeignKey('permit_applications.id'))
+    status = Column(Enum(ReviewStatus))
+    comments = Column(Text)
+    decision_date = Column(DateTime)
+    
+    # Relationships
+    committee = relationship("Committee", back_populates="reviews")
+    application = relationship("PermitApplication")
