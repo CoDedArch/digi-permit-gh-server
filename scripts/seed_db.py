@@ -1,7 +1,7 @@
 from sqlalchemy import select, func
 from app.models.document import PermitTypeModel, DocumentTypeModel
-from app.core.constants import PermitType
-from app.core.database import session_manager
+from app.services.Zoning_initializer import ZoningInitializer
+from app.services.mmda_initializer import MMDAInitializer
 from app.services.permit_initializer import PermitSystemInitializer
 from app.core.config import settings
 import logging
@@ -25,7 +25,11 @@ async def seed_all(db: AsyncSession) -> bool:
         # 2. Seed document types and requirements
         await PermitSystemInitializer.initialize_document_types(db)
         await PermitSystemInitializer.initialize_permit_requirements(db)
-        
+        # 3. Seed zoning districts
+        await ZoningInitializer.initialize_zoning_districts(db)
+
+        #4. Seed MMDA, Departments, and Committees
+        await MMDAInitializer.initialize_mmdas(db)
         # Commit is handled by the caller
         logger.info("✅ Seeding operations completed (commit pending)")
         return True
@@ -49,7 +53,7 @@ async def needs_seeding(db: AsyncSession) -> bool:
     return permit_count == 0 or doc_count == 0 or settings.FORCE_SEED
 
 async def seed_permit_types(db: AsyncSession):
-    """Seed permit types only"""
+    """Seed permit types only"""  
     logger.info("⏳ Seeding permit types...")
     await PermitTypeModel.seed_defaults(db)
     logger.info("✅ Permit types seeded")
