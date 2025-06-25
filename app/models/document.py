@@ -1,10 +1,11 @@
+from sqlalchemy import Enum as SQLEnum, Numeric
 import logging
-from sqlalchemy import JSON, Column, String, Enum, Integer, ForeignKey, Boolean, DateTime, UniqueConstraint, select
+from sqlalchemy import JSON, Column, String, Enum, Integer, ForeignKey, Boolean, DateTime, UniqueConstraint, func, select
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.base import Base, TimestampMixin
-from app.core.constants import DocumentType, DocumentStatus, PermitType
+from app.core.constants import DocumentStatus, PermitType, ZoneType
 
 logger = logging.getLogger(__name__)
 
@@ -25,62 +26,41 @@ class DocumentTypeModel(Base):
         back_populates="document_type",
         cascade="all, delete-orphan"
     )
-
+    
+    application_documents = relationship(
+        "ApplicationDocument",
+        back_populates="document_type",
+        cascade="all, delete-orphan"
+    )
 
 class PermitTypeModel(Base):
     __tablename__ = "permit_types"
     
-    id = Column(String(50), primary_key=True)  # Using the enum value as primary key
+    id = Column(String(50), primary_key=True)  # Simple action-based types
     name = Column(String(100), nullable=False)
     description = Column(String)
-    requires_epa_approval = Column(Boolean, default=False)
-    requires_heritage_review = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
+    base_fee = Column(Numeric(10, 2), nullable=False)  # e.g., 100.00
+    standard_duration_days = Column(Integer, nullable=False)  # e.g., 30 (days)
     
-    # Relationship with document types
+    # Relationships
     required_documents = relationship(
         "PermitDocumentRequirement",
         back_populates="permit_type",
         cascade="all, delete-orphan"
     )
-    
-    @classmethod
-    async def seed_defaults(cls, db: AsyncSession):
-        """Enhanced seeding with transaction safety"""
-        try:
-            for permit in PermitType:
-                # Use merge to handle conflicts gracefully
-                stmt = select(cls).where(cls.id == permit.value)
-                result = await db.execute(stmt)
-                existing = result.scalar_one_or_none()
-                
-                if not existing:
-                    permit_data = {
-                        "id": permit.value,
-                        "name": permit.name.replace("_", " ").title(),
-                        "description": f"Default {permit.value} permit type",
-                        "requires_epa_approval": "epa" in permit.name.lower(),
-                        "requires_heritage_review": "heritage" in permit.name.lower()
-                    }
-                    db.add(cls(**permit_data))
-                    logger.debug(f"Added permit type: {permit.value}")
-            
-            await db.flush()
-        except Exception as e:
-            logger.error(f"Error seeding permit types: {e}")
-            await db.rollback()
-            raise
+    applications = relationship("PermitApplication", back_populates="permit_type")
 
-
-# Junction Table for many-to-many relationship
+# Updated junction table with zoning awareness
 class PermitDocumentRequirement(Base):
     __tablename__ = "permit_document_requirements"
     
     id = Column(Integer, primary_key=True)
     permit_type_id = Column(String(50), ForeignKey('permit_types.id'))
     document_type_id = Column(Integer, ForeignKey('document_types.id'))
+    # Attributes
     is_mandatory = Column(Boolean, default=True)
-    conditional_logic = Column(JSON, nullable=True)  # For complex requirementss
+    conditional_logic = Column(JSON, nullable=True)
     notes = Column(String, nullable=True)
     phase = Column(String(50))  # "application", "approval", "construction"
     
@@ -88,26 +68,20 @@ class PermitDocumentRequirement(Base):
     permit_type = relationship("PermitTypeModel", back_populates="required_documents")
     document_type = relationship("DocumentTypeModel", back_populates="permit_requirements")
     
-    __table_args__ = (
-        UniqueConstraint('permit_type_id', 'document_type_id', name='uq_permit_document'),
-    )
 
 
-
-class ApplicationDocument(Base, TimestampMixin):
+class ApplicationDocument(Base):
     __tablename__ = 'application_documents'
     
     id = Column(Integer, primary_key=True)
-    application_id = Column(Integer, ForeignKey('permit_applications.id'), nullable=False)
-    document_type = Column(Enum(DocumentType), nullable=False)
-    file_path = Column(String(255), nullable=False)
-    file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer)  # in bytes
-    status = Column(Enum(DocumentStatus), default=DocumentStatus.PENDING)
-    rejection_reason = Column(String(255))
+    application_id = Column(Integer, ForeignKey('permit_applications.id'))
+    document_type_id = Column(Integer, ForeignKey('document_types.id'))
+    file_path = Column(String(512), nullable=False)
+    status = Column(SQLEnum(DocumentStatus), default=DocumentStatus.PENDING)
+    uploaded_by_id = Column(Integer, ForeignKey('users.id'))
+    uploaded_at = Column(DateTime, server_default=func.now())
+    reviewed_at = Column(DateTime)
     
-    # Relationships
     application = relationship("PermitApplication", back_populates="documents")
-    
-    def __repr__(self):
-        return f"<ApplicationDocument {self.file_name} ({self.document_type.value})>"
+    document_type = relationship("DocumentTypeModel", back_populates="application_documents")
+    uploaded_by = relationship("User")
