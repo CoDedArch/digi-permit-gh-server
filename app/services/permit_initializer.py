@@ -1,63 +1,69 @@
-from typing import Dict, List
+from typing import Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from app.core.constants import DOCUMENT_MAP
 from app.models.document import PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
+from app.core.constants import PERMIT_REQUIREMENTS, PERMIT_TYPE_DATA, DOCUMENT_TYPES_DATA
 
 class PermitSystemInitializer:
     
     @classmethod
-    async def initialize_document_types(cls, db: AsyncSession):
-        """Create all document types from the comprehensive map"""
-        all_documents = set()
-        for requirements in DOCUMENT_MAP.values():
-            all_documents.update(requirements)
-            
-        for doc_name in all_documents:
-            # Create a code by simplifying the name
-            doc_code = doc_name.upper().replace(" ", "_").replace("(", "").replace(")", "")
+    async def initialize_permit_types(cls, db: AsyncSession):
+        """Seed PermitTypeModel from PERMIT_TYPE_DATA"""
+        for data in PERMIT_TYPE_DATA:
             existing = await db.execute(
-                select(DocumentTypeModel).where(DocumentTypeModel.name == doc_name)
+                select(PermitTypeModel).where(PermitTypeModel.id == data["id"])
             )
             if not existing.scalar():
-                db.add(DocumentTypeModel(
-                    code=doc_code,
-                    name=doc_name,
-                    description=f"Required for {doc_name.replace('(', '').replace(')', '')}"
-                ))
+                db.add(PermitTypeModel(**data))
         await db.commit()
-    
+
+    @classmethod
+    async def initialize_document_types(cls, db: AsyncSession):
+        """Seed document types from DOCUMENT_TYPES_DATA"""
+        for data in DOCUMENT_TYPES_DATA:
+            existing = await db.execute(
+                select(DocumentTypeModel).where(DocumentTypeModel.code == data["code"])
+            )
+            if not existing.scalar():
+                db.add(DocumentTypeModel(**data))
+        await db.commit()
+
     @classmethod
     async def initialize_permit_requirements(cls, db: AsyncSession):
-        """Set up all permit-document relationships from DOCUMENT_MAP"""
-        for permit_type, doc_names in DOCUMENT_MAP.items():
-            # Get the permit type from DB
-            permit = await db.execute(
-                select(PermitTypeModel).where(PermitTypeModel.id == permit_type.value))
-            
-            permit = permit.scalar()
-            
+        """Seed PermitDocumentRequirement based on PERMIT_REQUIREMENTS"""
+        # Load all document types into a dict by code
+        documents = {
+            doc.code: doc for doc in (await db.execute(select(DocumentTypeModel))).scalars().all()
+        }
+
+        # Load all permit types into a dict by id
+        permit_types = {
+            p.id: p for p in (await db.execute(select(PermitTypeModel))).scalars().all()
+        }
+
+        for permit_code, doc_entries in PERMIT_REQUIREMENTS.items():
+            permit = permit_types.get(permit_code)
             if not permit:
                 continue
-                
-            # Get all related documents
-            documents = await db.execute(
-                select(DocumentTypeModel).where(DocumentTypeModel.name.in_(doc_names)))
-            documents = documents.scalars().all()
-            
-            # Create requirements
-            for doc in documents:
+
+            for entry in doc_entries:
+                doc = documents.get(entry["code"])
+                if not doc:
+                    continue
+
+                # Check for existing entry
                 existing = await db.execute(
                     select(PermitDocumentRequirement).where(
                         PermitDocumentRequirement.permit_type_id == permit.id,
                         PermitDocumentRequirement.document_type_id == doc.id
-                    ))
+                    )
+                )
                 if not existing.scalar():
-                    is_mandatory = not ("if applicable" in doc.name.lower())
                     db.add(PermitDocumentRequirement(
                         permit_type_id=permit.id,
                         document_type_id=doc.id,
-                        is_mandatory=is_mandatory,
-                        phase="application"  # Default phase
+                        is_mandatory=entry.get("is_mandatory", True),
+                        phase=entry.get("phase", "application"),
+                        notes=entry.get("notes")
                     ))
         await db.commit()
