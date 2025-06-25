@@ -20,10 +20,11 @@ async def seed_all(db: AsyncSession) -> bool:
         logger.info("🚀 Starting database seeding process...")
         
         # 1. Seed permit types
-        await seed_permit_types(db)
+        # await seed_permit_types(db)
         
         # 2. Seed document types and requirements
         await PermitSystemInitializer.initialize_document_types(db)
+        await PermitSystemInitializer.initialize_permit_types(db)
         await PermitSystemInitializer.initialize_permit_requirements(db)
         # 3. Seed zoning districts
         await ZoningInitializer.initialize_zoning_districts(db)
