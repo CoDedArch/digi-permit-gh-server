@@ -140,6 +140,10 @@ class DatabaseSessionManager:
         try:
             db_url = make_url(settings.APOSTGRES_DATABASE_URL)
             db_name = db_url.database
+
+            print("Database URL is:", db_url )
+            print("Database URL name:", db_name )
+
             # Connect to the default database (usually 'postgres')
             default_url = db_url.set(database="postgres")
             engine = create_async_engine(str(default_url), echo=True)
