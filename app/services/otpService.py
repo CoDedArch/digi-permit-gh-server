@@ -118,6 +118,7 @@ class OtpService:
             if unverified_user.is_locked else OTPVerificationStatus.CODE_INVALID
             }
 
+        onboarding_stages = {VerificationStage.OTP_PENDING, VerificationStage.OTP_VERIFIED}
 
         # IF OTP  is correct - CHECK if user Exists
         user_query = await db.execute(
@@ -128,8 +129,8 @@ class OtpService:
 
         user = user_query.scalar_one_or_none()
 
+
         # set Onboarding to False
-        onboarding = False
         if not user:
             user = User(
                 email=email_or_phone if "@" in email_or_phone else None,
@@ -143,16 +144,26 @@ class OtpService:
             )
             db.add(user)
             onboarding = True
+        else:
+            onboarding = user.verification_stage in onboarding_stages
         # Clean Up the unverified user
         await db.delete(unverified_user)
         await db.commit()
 
         # we'll issue a jwt token that last 1 hour
-        print("Remember is", remember)
+        method = "email" if "@" in email_or_phone else "phone"
+        payload = {
+            "sub": str(user.id),
+            "onboarding": onboarding,
+            "role": user.role.value,
+            "method": method,
+        }
+
+
         if remember:
-            token = create_jwt_token({"sub": str(user.id), "onboarding": onboarding, "role": user.role.value}, expires_delta=timedelta(days=30))
+            token = create_jwt_token(payload, expires_delta=timedelta(days=30))
         else:
-            token = create_jwt_token({"sub": str(user.id), "onboarding": onboarding, "role": user.role.value}, expires_delta=timedelta(hours=1))
+            token = create_jwt_token(payload, expires_delta=timedelta(hours=1))
 
 
         return {
