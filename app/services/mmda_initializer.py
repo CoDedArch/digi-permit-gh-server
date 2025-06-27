@@ -32,7 +32,7 @@ class MMDAInitializer:
                     mmda = MMDA(**mmda_data)
                     db.add(mmda)
                     logger.debug(f"Added MMDA: {mmda_data['name']}")
-
+            await db.flush()  # Ensure MMDAs are committed before adding Departments and Committees
             # Seed Departments for each MMDA
             mmdas = (await db.execute(select(MMDA))).scalars().all()
             for mmda in mmdas:
