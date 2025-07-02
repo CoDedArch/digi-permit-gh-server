@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Column, String, Integer, Enum, Boolean, ForeignKey, DateTime, Text
+from sqlalchemy import JSON, Column, String, Integer, Enum, Boolean, ForeignKey, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.models.base import Base, TimestampMixin
 from app.core.constants import ReviewStatus, UserRole, VerificationStage
@@ -30,13 +30,17 @@ class User(Base, TimestampMixin):
     other_name = Column(String(100))
     phone = Column(String(20), unique=True)
     alt_phone = Column(String(20), unique=True)
+    applicant_type_code = Column(String(50), ForeignKey("applicant_types.code"), nullable=True)
     is_active = Column(Boolean, default=False)  # Disabled until Ghana Card verification
     preferred_verification = Column(String(10), default='email')
     role = Column(Enum(UserRole), nullable=False, default=UserRole.APPLICANT)
     verification_stage = Column(Enum(VerificationStage), 
                               default=VerificationStage.OTP_PENDING)  # Tracks verification progress
-    
+    date_of_birth = Column(DateTime)
+    gender = Column(String(1))  # M/F/O
+    address = Column(String(255))
     # Relationships
+    applicant_type = relationship("ApplicantType", back_populates="users")
     profile = relationship("UserProfile", uselist=False, back_populates="user")
     documents = relationship("UserDocument", back_populates="user")
     applications = relationship("PermitApplication", back_populates="applicant")
@@ -65,19 +69,40 @@ class User(Base, TimestampMixin):
     def __repr__(self):
         return f"<User {self.email} ({self.role.value})>"
 
+class ApplicantType(Base):
+    __tablename__ = "applicant_types"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)  # e.g., "property_owner"
+    name = Column(String(100), nullable=False)              # e.g., "Property Owner"
+    description = Column(Text, nullable=True)
+
+    users = relationship("User", back_populates="applicant_type", foreign_keys="[User.applicant_type_code]")
+
+
+class ProfessionalInCharge(Base):
+    __tablename__ = "professionals"
+    id = Column(Integer, primary_key=True)
+    full_name = Column(String(255), nullable=False)
+    email = Column(String(255))
+    phone = Column(String(50))
+    firm_name = Column(String(255), nullable=True)
+    role = Column(String(50), default="architect")  # architect, engineer, etc.
+    license_number = Column(String(100))  # optional, depending on context
+
+    applications = relationship("PermitApplication", back_populates="architect")
+
 class UserProfile(Base, TimestampMixin):
     __tablename__ = 'user_profiles'
     
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     ghana_card_number = Column(String(30), unique=True)
-    date_of_birth = Column(DateTime)
-    gender = Column(String(1))  # M/F/O
-    address = Column(String(255), nullable=False)
     digital_address = Column(String(20))  # GhanaPostGPS code
-    company_name = Column(String(255))
-    license_number = Column(String(100))  # For professionals
     specialization = Column(String(100))  # For officers
+    work_email = Column(String(255), unique=True, nullable=True)
+    staff_number = Column(String(50), unique=True, nullable=True, comment="Unique MMDA-issued staff or payroll number")
+    designation = Column(String(100))
     
     user = relationship("User", back_populates="profile")
 
@@ -129,11 +154,14 @@ class Department(Base, TimestampMixin):
     id = Column(Integer, primary_key=True)
     mmda_id = Column(Integer, ForeignKey('mmdas.id'), nullable=False)
     name = Column(String(100), nullable=False)  # e.g., "Physical Planning"
-    code = Column(String(10), unique=True)  # e.g., "PPD"
+    code = Column(String(10))  # e.g., "PPD"
     
     # Relationships
     mmda = relationship("MMDA", back_populates="departments")
     staff = relationship("DepartmentStaff", back_populates="department")
+    __table_args__ = (
+        UniqueConstraint('mmda_id', 'code', name='uq_department_code_per_mmda'),
+    )
     
     def __repr__(self):
         return f"<Department {self.name} ({self.code})>"

@@ -8,6 +8,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.base import Base
 from app.core.constants import ApplicationStatus
+from app.models.zoning import application_site_conditions
 
 
 class PermitApplication(Base):
@@ -16,14 +17,23 @@ class PermitApplication(Base):
     id = Column(Integer, primary_key=True)
     application_number = Column(String(50), unique=True, nullable=False, index=True)
     mmda_id = Column(Integer, ForeignKey('mmdas.id'), nullable=False)
+    architect_id = Column(Integer, ForeignKey("professionals.id", ondelete="SET NULL"))
     applicant_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
     permit_type_id = Column(String(50), ForeignKey('permit_types.id'), nullable=False)
+    zoning_district_id = Column(Integer, ForeignKey("zoning_districts.id"), nullable=True)
+    zoning_use_id = Column(Integer, ForeignKey("zoning_permitted_uses.id"), nullable=True)
+    drainage_type_id = Column(Integer, ForeignKey("drainage_types.id"))
     status = Column(SQLEnum(ApplicationStatus), default=ApplicationStatus.DRAFT, nullable=False, index=True)
     project_name = Column(String(255), nullable=False)
     project_description = Column(Text)
+    parking_spaces = Column(Integer)
+    setbacks = Column(JSONB)
+    floor_areas = Column(JSONB)
+    site_conditions = Column(JSONB)  # {"existing_structures": "block wall", "public_services": "storm drain nearby"}
+    previous_land_use_id = Column(Integer, ForeignKey("previous_land_uses.id", ondelete="SET NULL"))
+    drainage_type = Column(String(100))
     project_address = Column(String(255), nullable=False)
     parcel_number = Column(String(50))  # Important for property identification
-    zoning_district = Column(String(50))  # Important for compliance checks
     estimated_cost = Column(Float)
     construction_area = Column(Float)  # in square meters
     expected_start_date = Column(DateTime)
@@ -51,6 +61,11 @@ class PermitApplication(Base):
     )
 
     # Relationships
+    zoning_use = relationship("ZoningPermittedUse")
+    drainage_type = relationship("DrainageType", back_populates="applications")
+    zoning_district = relationship("ZoningDistrict")
+    site_conditions = relationship("SiteCondition", secondary=application_site_conditions, back_populates="applications")
+    architect = relationship("ProfessionalInCharge", back_populates="applications")
     mmda = relationship("MMDA", back_populates="permit_applications")
     applicant = relationship("User", back_populates="applications")
     permit_type = relationship("PermitTypeModel", back_populates="applications")
@@ -174,7 +189,6 @@ class PermitApplication(Base):
     
     def __repr__(self):
         return f"<PermitApplication {self.application_number} ({self.status})>"
-    
 
 class ApplicationStatusHistory(Base):
     __tablename__ = 'application_status_history'

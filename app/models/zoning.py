@@ -1,5 +1,5 @@
 from geoalchemy2 import Geometry
-from sqlalchemy import Boolean, Column, ForeignKey, String, JSON, Integer, Float, Text
+from sqlalchemy import Boolean, Column, ForeignKey, String, JSON, Integer, Float, Table, Text
 from sqlalchemy.dialects.postgresql import ENUM
 from sqlalchemy.orm import relationship
 from app.models.base import Base
@@ -71,3 +71,37 @@ class ZoningProhibitedUse(Base):
     use = Column(String(255), nullable=False)
 
     zoning_district = relationship("ZoningDistrict", back_populates="prohibited_uses")
+
+
+class SiteCondition(Base):
+    __tablename__ = "site_conditions"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text)
+
+    applications = relationship("PermitApplication", secondary="application_site_conditions", back_populates="site_conditions")
+
+
+application_site_conditions = Table(
+    "application_site_conditions", Base.metadata,
+    Column("application_id", ForeignKey("permit_applications.id", ondelete="CASCADE")),
+    Column("condition_id", ForeignKey("site_conditions.id", ondelete="CASCADE"))
+)
+
+
+class DrainageType(Base):
+    __tablename__ = "drainage_types"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text)
+
+    applications = relationship("PermitApplication", back_populates="drainage_type")
+
+class PreviousLandUse(Base):
+    __tablename__ = "previous_land_uses"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(Text)
