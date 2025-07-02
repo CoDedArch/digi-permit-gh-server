@@ -1,11 +1,15 @@
 from datetime import timedelta
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 import jwt
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.user import ApplicantType
 from app.schemas.AthenticationSchemas import SendOtpRequest, VerifyOtpRequest
 from authlib.integrations.starlette_client import OAuth
 from app.core.database import aget_db
+from app.schemas.User import ApplicantTypeOut
 from app.services.otpService import OtpService
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -58,7 +62,7 @@ async def send_otp(
         # Log unexpected errors
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred"
+            detail="You are not connected"
         )
 
 
@@ -195,3 +199,9 @@ async def logout():
     response = JSONResponse({"message": "Logged out"})
     response.delete_cookie("auth_token")
     return response
+
+
+@router.get("/applicant-types", response_model=List[ApplicantTypeOut])
+async def get_applicant_types(db: AsyncSession = Depends(aget_db)):
+    result = await db.execute(select(ApplicantType).order_by(ApplicantType.name))
+    return result.scalars().all()
