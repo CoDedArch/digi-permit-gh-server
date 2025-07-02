@@ -9,6 +9,10 @@ from app.api.v1.routers.inspections import router as inspection_router
 from app.api.v1.routers.payments import router as payment_router
 from app.api.v1.routers.reviews import router as review_router
 from app.api.v1.routers.users import router as users_router
+from app.api.v1.routers.uploads import router as upload_router
+from app.api.v1.routers.onboarding import router as onboarding_router
+from app.api.v1.routers.mmdas import router as mmdas_router
+from app.api.v1.routers.payments import router as payment_router
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -122,3 +126,7 @@ app.include_router(inspection_router, tags=["inspections"])
 app.include_router(payment_router, tags=["payments"])
 app.include_router(review_router, tags=["reviews"])
 app.include_router(users_router, tags=["users"])
+app.include_router(onboarding_router, tags=["onboarding"])
+app.include_router(upload_router, tags=["uploads"])
+app.include_router(mmdas_router, tags=["mmdas"])
+app.include_router(payment_router, tags=["payments"])
