@@ -1,8 +1,10 @@
 from sqlalchemy import select, func
 from app.models.document import PermitTypeModel, DocumentTypeModel
 from app.services.Zoning_initializer import ZoningInitializer
+from app.services.applicant_type_initializer import ApplicantTypeInitializer
 from app.services.mmda_initializer import MMDAInitializer
 from app.services.permit_initializer import PermitSystemInitializer
+from app.services.site_condition_drainage_initializer import SiteConditionAndDrainageInitializer
 from app.core.config import settings
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,17 +21,21 @@ async def seed_all(db: AsyncSession) -> bool:
             
         logger.info("🚀 Starting database seeding process...")
         
-        # 1. Seed permit types
-        # await seed_permit_types(db)
         
-        # 2. Seed document types and requirements
+        # 1. Seed document types and requirements
         await PermitSystemInitializer.initialize_document_types(db)
         await PermitSystemInitializer.initialize_permit_types(db)
         await PermitSystemInitializer.initialize_permit_requirements(db)
+
+        #2 seed Site Conditions and Drainage types
+        await SiteConditionAndDrainageInitializer.initialize(db)
+        
         # 3. Seed zoning districts
+        await ApplicantTypeInitializer.initialize(db)
+        # 4. Seed zoning districts
         await ZoningInitializer.initialize_zoning_districts(db)
 
-        #4. Seed MMDA, Departments, and Committees
+        #5. Seed MMDA, Departments, and Committees
         await MMDAInitializer.initialize_mmdas(db)
         # Commit is handled by the caller
         logger.info("✅ Seeding operations completed (commit pending)")
