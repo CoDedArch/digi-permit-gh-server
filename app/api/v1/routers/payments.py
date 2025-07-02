@@ -1,33 +1,99 @@
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
-from typing import List
+from datetime import datetime
+import traceback
+from fastapi import APIRouter, Query, Request, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
+from app.core.database import aget_db
+from app.core.security import decode_jwt_token
+from app.models.payment import Payment, PaymentPurpose, PaymentStatus
+from app.services.PaystackServices import PaystackService
+from app.schemas.payment import PaymentInitRequest, PaymentInitResponse, PaymentMethod, PaymentRequest
+from app.models.user import User
 
-router = APIRouter(
-    prefix="/payments",
-    tags=["payments"]
-)
+router = APIRouter(prefix="/payments", tags=["payments"])
 
-# Example payment model
-class Payment(BaseModel):
-    id: int
-    amount: float
-    status: str
+@router.post("/initialize", response_model=PaymentInitResponse)
+async def initialize_payment(
+    payload: PaymentRequest,
+    request: Request,
+    db: AsyncSession = Depends(aget_db)
+):
+    # 🔐 Extract user from cookie token
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        payload_token = decode_jwt_token(token)
+        user_id = int(payload_token.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-# In-memory storage for demonstration
-payments_db = []
+    # 🔍 Get user
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-@router.get("/", response_model=List[Payment])
-def list_payments():
-    return payments_db
+    print("User is: ", user)
+    # 💳 Create pending payment
+    reference = f"APP-{uuid4().hex[:10].upper()}"
+    payment = Payment(
+        user_id=user.id,
+        amount=payload.amount,
+        purpose=PaymentPurpose.PROCESSING_FEE,
+        status=PaymentStatus.PENDING,
+        transaction_reference=reference,
+    )
+    db.add(payment)
+    await db.commit()
+    await db.refresh(payment)
 
-@router.post("/", response_model=Payment, status_code=status.HTTP_201_CREATED)
-def create_payment(payment: Payment):
-    payments_db.append(payment)
-    return payment
+    # 🚀 Call Paystack API
+    try:
+        response = await PaystackService.initialize_payment(
+            data=PaymentInitRequest(
+                amount=payload.amount,
+                email=user.email,
+                callback_url=str(payload.callback_url),
+                purpose=PaymentPurpose.PROCESSING_FEE,
+                notes=None,
+                user_id=user.id,
+                reference=reference,
+            )
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{payment_id}", response_model=Payment)
-def get_payment(payment_id: int):
-    for payment in payments_db:
-        if payment.id == payment_id:
-            return payment
-    raise HTTPException(status_code=404, detail="Payment not found")
+    return response
+
+
+
+@router.get("/verify")
+async def verify_payment(reference: str, db: AsyncSession = Depends(aget_db)):
+    # 1. Fetch payment record by reference
+    result = await db.execute(
+        select(Payment).where(Payment.transaction_reference == reference)
+    )
+    payment = result.scalar_one_or_none()
+
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    if payment.status == PaymentStatus.SUCCESS:
+        return {"message": "Already verified", "status": payment.status}
+
+    # 2. Verify with Paystack
+    try:
+        verification = await PaystackService.verify_transaction(reference)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 3. Update payment status
+    payment.status = PaymentStatus.SUCCESS
+    payment.payment_date = verification["paid_at"]  # optional: parse to datetime
+    db.add(payment)
+    await db.commit()
+
+    return {"message": "Payment verified", "status": payment.status}

@@ -3,89 +3,139 @@ from typing import Dict, List
 from sqlalchemy.sql import exists
 
 class PermitType(str, enum.Enum):
-    """
-    Simplified to focus on the ACTION being requested, not the building type.
-    Building types are handled by zoning permitted uses.
-    """
     NEW_CONSTRUCTION = "new_construction"
-    RENOVATION = "renovation"
+    RENOVATION_ALTERATION = "renovation_alteration"
     CHANGE_OF_USE = "change_of_use"
     DEMOLITION = "demolition"
-    TEMPORARY = "temporary"
+    TEMPORARY_STRUCTURE = "temporary_structure"
     SIGN_PERMIT = "sign_permit"
     SUBDIVISION = "subdivision"
-    
+    FITTINGS_INSTALLATION = "fittings_installation"
+    HOARDING = "hoarding"
+    SAND_WEANING = "sand_weaning"
+
     @property
     def display_name(self) -> str:
         names = {
             "new_construction": "New Construction",
-            "renovation": "Renovation/Alteration",
+            "renovation_alteration": "Renovation/Alteration",
             "change_of_use": "Change of Building Use",
             "demolition": "Demolition Permit",
-            "temporary": "Temporary Structure",
+            "temporary_structure": "Temporary Structure",
             "sign_permit": "Signage/Billboard",
-            "subdivision": "Land Subdivision"
+            "subdivision": "Land Subdivision",
+            "fittings_installation": "Installation of Fittings",
+            "hoarding": "Hoarding of Property",
+            "sand_weaning": "Sand Weaning"
         }
         return names[self.value]
 
 
 PERMIT_TYPE_DATA = [
-{
-    "id": PermitType.NEW_CONSTRUCTION.value,
-    "name": PermitType.NEW_CONSTRUCTION.display_name,
-    "description": "Permits for constructing new buildings or major structural additions.",
-    "base_fee": 500.00,
-    "standard_duration_days": 90,
-    "is_active": True
-},
-{
-    "id": PermitType.RENOVATION.value,
-    "name": PermitType.RENOVATION.display_name,
-    "description": "Covers alterations, interior remodels, or improvements to existing structures.",
-    "base_fee": 250.00,
-    "standard_duration_days": 60,
-    "is_active": True
-},
-{
-    "id": PermitType.CHANGE_OF_USE.value,
-    "name": PermitType.CHANGE_OF_USE.display_name,
-    "description": "Required when the intended use of a building is being changed (e.g. residential to commercial).",
-    "base_fee": 200.00,
-    "standard_duration_days": 45,
-    "is_active": True
-},
-{
-    "id": PermitType.DEMOLITION.value,
-    "name": PermitType.DEMOLITION.display_name,
-    "description": "Covers full or partial demolition of structures.",
-    "base_fee": 150.00,
-    "standard_duration_days": 30,
-    "is_active": True
-},
-{
-    "id": PermitType.TEMPORARY.value,
-    "name": PermitType.TEMPORARY.display_name,
-    "description": "For temporary structures such as event tents or kiosks.",
-    "base_fee": 100.00,
-    "standard_duration_days": 15,
-    "is_active": True
-},
-{
-    "id": PermitType.SIGN_PERMIT.value,
-    "name": PermitType.SIGN_PERMIT.display_name,
-    "description": "Permits for billboards, business signage, and other advertising structures.",
-    "base_fee": 75.00,
-    "standard_duration_days": 20,
-    "is_active": True
-},
-{
-    "id": PermitType.SUBDIVISION.value,
-    "name": PermitType.SUBDIVISION.display_name,
-    "description": "For dividing land parcels into multiple lots for development or sale.",
-    "base_fee": 600.00,
-    "standard_duration_days": 120,
-    "is_active": True
-},
+    {
+        "id": PermitType.NEW_CONSTRUCTION.value,
+        "name": PermitType.NEW_CONSTRUCTION.display_name,
+        "description": "Permits for constructing new buildings or major structural additions.",
+        "base_fee": 500.00,
+        "standard_duration_days": 90,
+        "is_active": True
+    },
+    {
+        "id": PermitType.RENOVATION_ALTERATION.value,
+        "name": PermitType.RENOVATION_ALTERATION.display_name,
+        "description": "Covers alterations, interior remodels, or improvements to existing structures.",
+        "base_fee": 250.00,
+        "standard_duration_days": 60,
+        "is_active": True
+    },
+    {
+        "id": PermitType.CHANGE_OF_USE.value,
+        "name": PermitType.CHANGE_OF_USE.display_name,
+        "description": "Required when the intended use of a building is being changed (e.g. residential to commercial).",
+        "base_fee": 200.00,
+        "standard_duration_days": 45,
+        "is_active": True
+    },
+    {
+        "id": PermitType.DEMOLITION.value,
+        "name": PermitType.DEMOLITION.display_name,
+        "description": "Covers full or partial demolition of structures.",
+        "base_fee": 150.00,
+        "standard_duration_days": 30,
+        "is_active": True
+    },
+    {
+        "id": PermitType.TEMPORARY_STRUCTURE.value,
+        "name": PermitType.TEMPORARY_STRUCTURE.display_name,
+        "description": "For temporary structures such as event tents or kiosks.",
+        "base_fee": 100.00,
+        "standard_duration_days": 15,
+        "is_active": True
+    },
+    {
+        "id": PermitType.SIGN_PERMIT.value,
+        "name": PermitType.SIGN_PERMIT.display_name,
+        "description": "Permits for billboards, business signage, and other advertising structures.",
+        "base_fee": 75.00,
+        "standard_duration_days": 20,
+        "is_active": True
+    },
+    {
+        "id": PermitType.SUBDIVISION.value,
+        "name": PermitType.SUBDIVISION.display_name,
+        "description": "For dividing land parcels into multiple lots for development or sale.",
+        "base_fee": 600.00,
+        "standard_duration_days": 120,
+        "is_active": True
+    },
+    {
+        "id": PermitType.FITTINGS_INSTALLATION.value,
+        "name": PermitType.FITTINGS_INSTALLATION.display_name,
+        "description": "Permit for installing electrical, plumbing, or mechanical systems in buildings.",
+        "base_fee": 120.00,
+        "standard_duration_days": 20,
+        "is_active": True
+    },
+    {
+        "id": PermitType.HOARDING.value,
+        "name": PermitType.HOARDING.display_name,
+        "description": "Permit for erecting temporary hoarding or fencing around a construction or demolition site.",
+        "base_fee": 80.00,
+        "standard_duration_days": 10,
+        "is_active": True
+    },
+    {
+        "id": PermitType.SAND_WEANING.value,
+        "name": PermitType.SAND_WEANING.display_name,
+        "description": "Permit for the extraction or removal of sand for construction or commercial purposes.",
+        "base_fee": 300.00,
+        "standard_duration_days": 30,
+        "is_active": True
+    }
+]
+
+SITE_CONDITION_DATA = [
+    {"name": "Existing Building Structure", "description": "Portion of the land contains existing buildings or ruins."},
+    {"name": "Steep Slope or Uneven Terrain", "description": "Land includes steep gradients or irregular topography."},
+    {"name": "Flood-prone Area", "description": "Location is susceptible to flooding or near a drainage channel."},
+    {"name": "Encroachment Risk", "description": "Site partially overlaps with neighboring properties or public land."},
+    {"name": "Nearby High-Tension Lines", "description": "Overhead electrical lines pose limitations or hazards."},
+    {"name": "Riparian Buffer Zone", "description": "Located near water bodies with development restrictions."},
+    {"name": "Protected Tree Cover", "description": "Site includes trees that may be protected under zoning laws."},
+    {"name": "Existing Utility Lines", "description": "Underground or overhead services (water, sewer, power)."},
+    {"name": "Located on Hilltop or Ridge", "description": "Site topography affects access or stability."},
+    {"name": "Adjacent to Industrial Use", "description": "Neighbouring land use may impact suitability for residential."}
+]
+
+DRAINAGE_TYPE_DATA = [
+    {"name": "Public Sewer System", "description": "Connected to centralized sewer lines managed by the local authority."},
+    {"name": "Septic Tank", "description": "On-site underground tank for domestic sewage treatment."},
+    {"name": "Soakaway Pit", "description": "Leach pit that allows effluent to soak into the soil."},
+    {"name": "EcoSan Toilet System", "description": "Dry composting toilet system that recycles waste."},
+    {"name": "Composting Toilet", "description": "On-site biological treatment of human waste without water."},
+    {"name": "Vacuum or Tanker Collection", "description": "Periodic mechanical collection via vacuum truck."},
+    {"name": "Combined Storm and Sanitary", "description": "Single system handling both stormwater and sewage."},
+    {"name": "Surface Drainage Only", "description": "Limited to stormwater management; no sewage disposal."}
 ]
 
 class UserRole(enum.Enum):
@@ -93,6 +143,26 @@ class UserRole(enum.Enum):
     REVIEW_OFFICER = "review_officer"
     INSPECTION_OFFICER = "inspection_officer"
     ADMIN = "admin"
+
+class ApplicantType(enum.Enum):
+    PROPERTY_OWNER = "property_owner"
+    LICENSED_ARCHITECT = "licensed_architect"
+    LICENSED_ENGINEER = "licensed_engineer"
+    DEVELOPER = "developer"
+    PROJECT_MANAGER = "project_manager"
+    INDIVIDUAL = "individual"
+    COMPANY_REPRESENTATIVE = "company_representative"
+
+APPLICANT_TYPE_DATA = [
+    {"code": "property_owner", "name": "Property Owner", "description": "The legal owner of the land or property."},
+    {"code": "licensed_architect", "name": "Licensed Architect", "description": "A certified architect applying on behalf of a client."},
+    {"code": "licensed_engineer", "name": "Licensed Engineer", "description": "A certified engineer responsible for technical documentation."},
+    {"code": "developer", "name": "Developer", "description": "A company or individual developing the property."},
+    {"code": "project_manager", "name": "Project Manager", "description": "Manages construction on behalf of stakeholders."},
+    {"code": "individual", "name": "Individual", "description": "A citizen applying for personal residential or small-scale use."},
+    {"code": "company_representative", "name": "Company Representative", "description": "Authorized representative of a registered company."}
+]
+
 
 class ApplicationStatus(enum.Enum):
     DRAFT = "draft"
@@ -102,6 +172,8 @@ class ApplicationStatus(enum.Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     INSPECTION_PENDING = "inspection_pending"
+    INSPECTION_COMPLETED = "inspected"
+    FOR_APPROVAL_OR_REJECTION = "approval requested"
     ISSUED = "issued"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -124,37 +196,59 @@ PERMIT_REQUIREMENTS = {
         {"code": "ownership_documents", "phase": "application"},
         {"code": "building_permit_form", "phase": "application"},
     ],
-    "renovation": [
-        {"code": "site_plan"},
-        {"code": "architectural_drawings"},
-        {"code": "ownership_documents"},
+    "renovation_alteration": [
+        {"code": "site_plan", "phase": "application"},
+        {"code": "architectural_drawings", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "building_permit_form", "phase": "application"},
     ],
     "change_of_use": [
-        {"code": "site_plan"},
-        {"code": "zoning_clearance"},
-        {"code": "building_permit_form"},
+        {"code": "site_plan", "phase": "application"},
+        {"code": "zoning_clearance", "phase": "application"},
+        {"code": "building_permit_form", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
     ],
     "demolition": [
-        {"code": "site_plan"},
-        {"code": "structural_drawings"},
-        {"code": "ownership_documents"},
-        {"code": "building_permit_form"},
+        {"code": "site_plan", "phase": "application"},
+        {"code": "structural_drawings", "phase": "review"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "building_permit_form", "phase": "application"},
+        {"code": "environmental_clearance", "phase": "review"},
     ],
-    "temporary": [
-        {"code": "site_plan"},
-        {"code": "building_permit_form"},
-        {"code": "fire_safety"},
+    "temporary_structure": [
+        {"code": "site_plan", "phase": "application"},
+        {"code": "building_permit_form", "phase": "application"},
+        {"code": "fire_safety", "phase": "review"},
+        {"code": "ownership_documents", "phase": "application"},
     ],
     "sign_permit": [
-        {"code": "site_plan"},
-        {"code": "ownership_documents"},
+        {"code": "site_plan", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "signage_drawings", "phase": "application"},
     ],
     "subdivision": [
-        {"code": "survey_plan"},
-        {"code": "ownership_documents"},
-        {"code": "zoning_clearance"},
-    ]
+        {"code": "survey_plan", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "zoning_clearance", "phase": "review"},
+    ],
+    "fittings_installation": [
+        {"code": "fittings_specifications", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "installation_plan", "phase": "review"},
+    ],
+    "hoarding": [
+        {"code": "site_plan", "phase": "application"},
+        {"code": "ownership_documents", "phase": "application"},
+        {"code": "safety_measures_plan", "phase": "review"},
+    ],
+    "sand_weaning": [
+        {"code": "environmental_clearance", "phase": "application"},
+        {"code": "site_plan", "phase": "application"},
+        {"code": "mineral_rights_document", "phase": "application"},
+        {"code": "building_permit_form", "phase": "application"},
+    ],
 }
+
 
 
 DOCUMENT_TYPES_DATA = [
@@ -3577,9 +3671,11 @@ MMDAS_DATA = [
         "jurisdiction_boundaries": {
             "type": "Polygon",
             "coordinates": [[
-                [-2.8667, 10.8000], [-2.8000, 10.8000],
-                [-2.8000, 10.8667], [-2.8667, 10.8667],
-                [-2.8667, 10.8000]
+                [-2.40, 10.25],
+                [-2.25, 10.25],
+                [-2.25, 11.00],
+                [-2.40, 11.00],
+                [-2.40, 10.25]
             ]]
         }
     },
@@ -3607,9 +3703,11 @@ MMDAS_DATA = [
         "jurisdiction_boundaries": {
             "type": "Polygon",
             "coordinates": [[
-                [-2.8500, 10.6333], [-2.7833, 10.6333],
-                [-2.7833, 10.7000], [-2.8500, 10.7000],
-                [-2.8500, 10.6333]
+                [-2.75, 10.3333],
+                [-2.4167, 10.3333],
+                [-2.4167, 11.0],
+                [-2.75, 11.0],
+                [-2.75, 10.3333]
             ]]
         }
     },
@@ -3622,9 +3720,11 @@ MMDAS_DATA = [
         "jurisdiction_boundaries": {
             "type": "Polygon",
             "coordinates": [[
-                [-2.0833, 10.5167], [-2.0167, 10.5167],
-                [-2.0167, 10.5833], [-2.0833, 10.5833],
-                [-2.0833, 10.5167]
+                [-2.75, 10.25],
+                [-2.25, 10.25],
+                [-2.25, 11.0],
+                [-2.75, 11.0],
+                [-2.75, 10.25]
             ]]
         }
     },
@@ -3639,11 +3739,14 @@ MMDAS_DATA = [
         "jurisdiction_boundaries": {
             "type": "Polygon",
             "coordinates": [[
-                [0.5333, 6.6000], [0.6000, 6.6000],
-                [0.6000, 6.6667], [0.5333, 6.6667],
-                [0.5333, 6.6000]
+                [0.0300, 6.3000],
+                [0.8000, 6.3000],
+                [0.8000, 6.7000],
+                [0.0300, 6.7000],
+                [0.0300, 6.3000]
             ]]
         }
+
     },
     {
         "name": "Agotime-Ziope District Assembly",
@@ -3689,7 +3792,40 @@ MMDAS_DATA = [
                 [0.6667, 6.1000]
             ]]
         }
-    },
+    },{
+  "name": "Bogoso-Prestea Municipal Assembly",
+  "type": "municipal",
+  "region": "Western",
+  "contact_email": "info@bogosoprestea.gov.gh",
+  "contact_phone": "+233312022400",
+  "jurisdiction_boundaries": {
+    "type": "Polygon",
+    "coordinates": [[
+      [-2.0333, 5.9000],
+      [-1.9167, 5.9000],
+      [-1.9167, 6.0500],
+      [-2.0333, 6.0500],
+      [-2.0333, 5.9000]
+    ]]
+  }
+}
+,
+    {
+    "name": "Tarkwa-Nsuaem Municipal Assembly",
+    "type": "municipal",
+    "region": "Western",
+    "contact_email": "info@tnma.gov.gh",
+    "contact_phone": "+233312022300",
+    "jurisdiction_boundaries": {
+        "type": "Polygon",
+        "coordinates": [[
+            [-2.1667, 4.0000], [-1.7500, 4.0000],
+            [-1.7500, 5.0667], [-2.1667, 5.0667],
+            [-2.1667, 4.0000]
+        ]]
+    }
+}
+,
     {
         "name": "Biakoye District Assembly",
         "type": "district",
@@ -3942,11 +4078,16 @@ MMDAS_DATA = [
 DEPARTMENTS_DATA = [
 {"name": "Physical Planning Department", "code": "PPD"},
 {"name": "Works Department", "code": "WRK"},
-{"name": "Finance Department", "code": "FIN"}
+{"name": "Finance Department", "code": "FIN"},
+{"name": "Client Services Unit", "code": "CLU"},
 ]
 
 COMMITTEES_DATA = [
 {"name": "Works Sub-Committee", "description": "Handles infrastructure projects"},
 {"name": "Finance and Administration Sub-Committee", "description": "Oversees budget and administration"},
 {"name": "Development Planning Sub-Committee", "description": "Handles development plans"}
+]
+
+PREVIOUS_LAND_USE = [
+
 ]

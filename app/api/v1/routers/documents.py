@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from typing import List
+from typing import List, Optional
 
 from app.core.database import aget_db
 from app.models.document import PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
-from app.schemas.PermitSchemas import PermitTypeWithRequirements
+from app.models.zoning import DrainageType, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
+from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
 
 router = APIRouter(
     prefix="/permits",
@@ -110,3 +111,69 @@ async def get_permit_type_by_id(
             status_code=500,
             detail=f"Error fetching permit type: {str(e)}"
         )
+
+@router.get("/permit-types", response_model=List[PermitTypeOut])
+async def get_permit_types(db: AsyncSession = Depends(aget_db)):
+    result = await db.execute(select(PermitTypeModel).where(PermitTypeModel.is_active == True))
+    return result.scalars().all()
+
+
+@router.get("/zoning-districts", response_model=List[ZoningDistrictOut])
+async def get_all_zoning_districts(db: AsyncSession = Depends(aget_db)):
+    try:
+        result = await db.execute(
+            select(ZoningDistrict)
+            .order_by(ZoningDistrict.name)
+        )
+        districts = result.scalars().all()
+
+        # Remove spatial_data explicitly (not included in schema anyway)
+        for d in districts:
+            d.spatial_data = None  # Optional: strip it if you want
+
+        return districts
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load zoning districts: {str(e)}")
+
+@router.get("/zoning-uses", response_model=List[ZoningPermittedUseOut])
+async def get_zoning_uses(
+    zoning_district_id: Optional[int] = None,
+    db: AsyncSession = Depends(aget_db)
+):
+    try:
+        query = (
+            select(ZoningPermittedUse)
+            .options(
+                selectinload(ZoningPermittedUse.required_documents)
+                .selectinload(ZoningUseDocumentRequirement.document_type)
+            )
+        )
+
+        if zoning_district_id:
+            query = query.where(ZoningPermittedUse.zoning_district_id == zoning_district_id)
+
+        result = await db.execute(query)
+        uses = result.scalars().all()
+        return uses
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load zoning uses: {str(e)}")
+
+
+@router.get("/drainage-types", response_model=List[DrainageTypeOut])
+async def get_all_drainage_types(db: AsyncSession = Depends(aget_db)):
+    try:
+        result = await db.execute(select(DrainageType).order_by(DrainageType.name))
+        return result.scalars().all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch drainage types: {str(e)}")
+
+
+@router.get("/site-conditions", response_model=List[SiteConditionOut])
+async def get_site_conditions(db: AsyncSession = Depends(aget_db)):
+    try:
+        result = await db.execute(select(SiteCondition).order_by(SiteCondition.name))
+        return result.scalars().all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load site conditions: {str(e)}")
