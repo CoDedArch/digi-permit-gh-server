@@ -44,3 +44,25 @@ class PaystackService:
                 access_code=data.get("access_code"),
                 status="success",
             )
+        
+    @classmethod
+    async def verify_transaction(cls, reference: str) -> dict:
+        url = f"{cls.BASE_URL}/transaction/verify/{reference}"
+
+        headers = {
+            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+
+            if response.status_code != 200:
+                raise Exception("Failed to verify payment")
+
+            resp_data = response.json()
+
+            if not resp_data.get("status"):
+                raise Exception(resp_data.get("message", "Verification failed"))
+
+            return resp_data["data"]
