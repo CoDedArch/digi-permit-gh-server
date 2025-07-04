@@ -6,8 +6,8 @@ from typing import List, Optional
 
 from app.core.database import aget_db
 from app.models.document import PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
-from app.models.zoning import DrainageType, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
-from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
+from app.models.zoning import DrainageType, PreviousLandUse, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
+from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, PreviousLandUseOut, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
 
 router = APIRouter(
     prefix="/permits",
@@ -177,3 +177,11 @@ async def get_site_conditions(db: AsyncSession = Depends(aget_db)):
         return result.scalars().all()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load site conditions: {str(e)}")
+    
+@router.get("/previous-land-uses", response_model=List[PreviousLandUseOut])
+async def get_previous_land_uses(db: AsyncSession = Depends(aget_db)):
+    try:
+        result = await db.execute(select(PreviousLandUse).order_by(PreviousLandUse.name))
+        return result.scalars().all()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load previous land uses: {str(e)}")

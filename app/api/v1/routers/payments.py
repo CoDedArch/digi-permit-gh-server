@@ -81,7 +81,7 @@ async def verify_payment(reference: str, db: AsyncSession = Depends(aget_db)):
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
 
-    if payment.status == PaymentStatus.SUCCESS:
+    if payment.status == PaymentStatus.COMPLETED:
         return {"message": "Already verified", "status": payment.status}
 
     # 2. Verify with Paystack
@@ -91,8 +91,8 @@ async def verify_payment(reference: str, db: AsyncSession = Depends(aget_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
     # 3. Update payment status
-    payment.status = PaymentStatus.SUCCESS
-    payment.payment_date = verification["paid_at"]  # optional: parse to datetime
+    payment.status = PaymentStatus.COMPLETED
+    payment.payment_date = datetime.fromisoformat(verification["paid_at"].replace("Z", "+00:00")).replace(tzinfo=None) # optional: parse to datetime
     db.add(payment)
     await db.commit()
 

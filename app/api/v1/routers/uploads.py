@@ -37,7 +37,7 @@ async def upload_file(
         url = upload_file_to_s3(
             file,
             folder="uploads/user_documents/ghanacards",
-            username=user.full_name or user.email
+            username=user.first_name or user.email
         )
         return {"file_url": url}
     except Exception as e:
@@ -69,7 +69,7 @@ async def upload_application_document(
         url = upload_file_to_s3(
             file,
             folder="uploads/application_documents",
-            username=user.full_name or user.email
+            username=user.first_name or user.email
         )
         return {"file_url": url}
     except Exception as e:
