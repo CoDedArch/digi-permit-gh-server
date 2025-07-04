@@ -120,3 +120,12 @@ class SiteConditionOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+from pydantic import BaseModel
+
+class PreviousLandUseOut(BaseModel):
+    id: str
+    name: str
+
+    class Config:
+        orm_mode = True

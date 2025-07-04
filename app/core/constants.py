@@ -1090,6 +1090,27 @@ ZONE_USES: Dict[ZoneType, Dict[str, List[str]]] = {
     }
 }
 
+PREVIOUS_LAND_USES = [
+    {"id": "none", "name": "Undeveloped / No prior use"},
+    {"id": "residential", "name": "Residential"},
+    {"id": "commercial", "name": "Commercial"},
+    {"id": "mixed_use", "name": "Mixed Use"},
+    {"id": "agriculture", "name": "Agriculture"},
+    {"id": "industrial", "name": "Industrial"},
+    {"id": "institutional", "name": "Institutional (Schools, Hospitals, etc.)"},
+    {"id": "open_space", "name": "Public Open Space / Park"},
+    {"id": "conservation", "name": "Conservation / Protected Area"},
+    {"id": "vacant", "name": "Vacant / Undeveloped Land"},
+    {"id": "extraction", "name": "Extractive / Mining Site"},
+    {"id": "transport", "name": "Transport / Warehousing"},
+    {"id": "utility", "name": "Utility / Infrastructure"},
+    {"id": "religious", "name": "Place of Worship"},
+    {"id": "emergency_services", "name": "Emergency / Security Services"},
+    {"id": "recreational", "name": "Recreational / Sports Facility"},
+    {"id": "tourism", "name": "Tourism / Hospitality Facility"},
+    {"id": "redevelopment_zone", "name": "Redevelopment / Slum Upgrade"},
+    {"id": "herbal", "name": "Herbal Medicine Use"},
+]
 
 
 

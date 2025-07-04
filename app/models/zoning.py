@@ -102,6 +102,5 @@ class DrainageType(Base):
 class PreviousLandUse(Base):
     __tablename__ = "previous_land_uses"
 
-    id = Column(Integer, primary_key=True)
+    id = Column(String(50), primary_key=True)
     name = Column(String(100), nullable=False, unique=True)
-    description = Column(Text)

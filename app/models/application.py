@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from geoalchemy2 import Geometry
 from sqlalchemy import Column, Index, Integer, String, Text, Float, DateTime, ForeignKey, Enum as SQLEnum, select
@@ -30,14 +30,14 @@ class PermitApplication(Base):
     setbacks = Column(JSONB)
     floor_areas = Column(JSONB)
     site_conditions = Column(JSONB)  # {"existing_structures": "block wall", "public_services": "storm drain nearby"}
-    previous_land_use_id = Column(Integer, ForeignKey("previous_land_uses.id", ondelete="SET NULL"))
+    previous_land_use_id = Column(String(50), ForeignKey("previous_land_uses.id", ondelete="SET NULL"))
     drainage_type = Column(String(100))
     project_address = Column(String(255), nullable=False)
     parcel_number = Column(String(50))  # Important for property identification
     estimated_cost = Column(Float)
     construction_area = Column(Float)  # in square meters
-    expected_start_date = Column(DateTime)
-    expected_end_date = Column(DateTime)
+    expected_start_date = Column(DateTime(timezone=True))
+    expected_end_date = Column(DateTime(timezone=True))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     submitted_at = Column(DateTime)
@@ -49,6 +49,10 @@ class PermitApplication(Base):
     parcel_geometry = Column(
         Geometry('POLYGON', srid=4326), 
         comment="Property boundary in GeoJSON format"
+    )
+    spatial_data = Column(
+        Geometry("POLYGON", srid=4326),
+        comment="Zoning district polygon snapshot at the time of application"
     )
     project_location = Column(
         Geometry('POINT', srid=4326),
@@ -65,6 +69,7 @@ class PermitApplication(Base):
     drainage_type = relationship("DrainageType", back_populates="applications")
     zoning_district = relationship("ZoningDistrict")
     site_conditions = relationship("SiteCondition", secondary=application_site_conditions, back_populates="applications")
+    previous_land_use = relationship("PreviousLandUse")
     architect = relationship("ProfessionalInCharge", back_populates="applications")
     mmda = relationship("MMDA", back_populates="permit_applications")
     applicant = relationship("User", back_populates="applications")
@@ -126,11 +131,13 @@ class PermitApplication(Base):
             raise ValueError("Construction area must be positive")
         return area
     
+
     @validates('expected_start_date', 'expected_end_date')
     def validate_dates(self, key, date):
-        if date is not None and date < datetime.now():
+        if date is not None and date < datetime.now(timezone.utc):
             raise ValueError("Date cannot be in the past")
         return date
+
     
     def is_submittable(self):
         """Check if application meets minimum requirements for submission"""
