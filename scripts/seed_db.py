@@ -4,6 +4,7 @@ from app.services.Zoning_initializer import ZoningInitializer
 from app.services.applicant_type_initializer import ApplicantTypeInitializer
 from app.services.mmda_initializer import MMDAInitializer
 from app.services.permit_initializer import PermitSystemInitializer
+from app.services.previous_land_initializer import PreviousLandUseSeeder
 from app.services.site_condition_drainage_initializer import SiteConditionAndDrainageInitializer
 from app.core.config import settings
 import logging
@@ -35,6 +36,7 @@ async def seed_all(db: AsyncSession) -> bool:
         # 4. Seed zoning districts
         await ZoningInitializer.initialize_zoning_districts(db)
 
+        await PreviousLandUseSeeder.seed(db)
         #5. Seed MMDA, Departments, and Committees
         await MMDAInitializer.initialize_mmdas(db)
         # Commit is handled by the caller
