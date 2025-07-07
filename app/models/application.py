@@ -31,7 +31,6 @@ class PermitApplication(Base):
     floor_areas = Column(JSONB)
     site_conditions = Column(JSONB)  # {"existing_structures": "block wall", "public_services": "storm drain nearby"}
     previous_land_use_id = Column(String(50), ForeignKey("previous_land_uses.id", ondelete="SET NULL"))
-    drainage_type = Column(String(100))
     project_address = Column(String(255), nullable=False)
     parcel_number = Column(String(50))  # Important for property identification
     estimated_cost = Column(Float)
@@ -42,6 +41,9 @@ class PermitApplication(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     submitted_at = Column(DateTime)
     approved_at = Column(DateTime)
+
+    fire_safety_plan = Column(Text, nullable=True)
+    waste_management_plan = Column(Text, nullable=True)
 
     # GIS SPATIAL FIELDS
     latitude = Column(Float, comment="Decimal degrees (WGS84)")
