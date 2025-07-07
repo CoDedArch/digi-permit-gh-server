@@ -80,7 +80,7 @@ async def create_application(
         expected_end_date=data.expected_end_date,
         drainage_type_id=int(data.drainageTypeId) if data.drainageTypeId else None,
         previous_land_use_id = (
-            int(data.previousLandUseId)
+            data.previousLandUseId
             if data.previousLandUseId and data.previousLandUseId != "none"
             else None
         ),
@@ -106,6 +106,8 @@ async def create_application(
         },
         site_conditions=data.siteConditionIds,
         gis_metadata={entry["key"]: entry["value"] for entry in data.gisMetadata or []},
+        fire_safety_plan=data.fireSafetyPlan,                # ✅ NEW
+        waste_management_plan=data.wasteManagementPlan, 
         status=ApplicationStatus.SUBMITTED,
         application_number=f"APP-{uuid4().hex[:6].upper()}",
     )
