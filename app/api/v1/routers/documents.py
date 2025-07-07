@@ -1,18 +1,207 @@
-from fastapi import APIRouter, Depends, HTTPException
+import json
+from fastapi import APIRouter, Depends, HTTPException, Request
+from geoalchemy2 import WKBElement, WKTElement
+from requests import session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
-
+from sqlalchemy.orm import joinedload
 from app.core.database import aget_db
-from app.models.document import PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
+from app.core.security import decode_jwt_token
+from app.models.application import PermitApplication
+from app.models.document import ApplicationDocument, PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
+from geoalchemy2.shape import to_shape
+from shapely.geometry import mapping
+from app.models.user import MMDA
 from app.models.zoning import DrainageType, PreviousLandUse, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
 from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, PreviousLandUseOut, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
+from app.schemas.permit_application import ApplicationDetailOut, ApplicationOut, ApplicationUpdate
 
 router = APIRouter(
     prefix="/permits",
     tags=["permits"]
 )
+
+def serialize_geom(geom):
+    if geom is None:
+        return None
+    if isinstance(geom, dict):
+        return geom  # already GeoJSON
+    if isinstance(geom, (WKTElement, WKBElement)):
+        return mapping(to_shape(geom))  # PostGIS objects
+    if isinstance(geom, str):
+        try:
+            return json.loads(geom)  # maybe stored as GeoJSON string
+        except json.JSONDecodeError:
+            return geom  # just return as-is
+    raise TypeError(f"Unsupported geometry format: {type(geom)}")
+
+
+
+@router.get("/my-applications", response_model=List[ApplicationOut])
+async def get_user_applications(
+    request: Request,
+    db: AsyncSession = Depends(aget_db)
+):
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    payload = decode_jwt_token(token)
+    user_id = int(payload.get("sub"))
+
+    # ✅ Build query
+    stmt = (
+        select(PermitApplication)
+        .where(PermitApplication.applicant_id == user_id)
+        .options(
+            selectinload(PermitApplication.documents).selectinload(ApplicationDocument.document_type),
+            selectinload(PermitApplication.permit_type),
+            selectinload(PermitApplication.mmda),
+        )
+        .order_by(PermitApplication.created_at.desc())
+    )
+
+    # ✅ Execute it only once
+    result = await db.execute(stmt)
+    apps = result.scalars().all()
+
+    print("✅ Final serialized apps:", apps)
+    return [ApplicationOut.from_orm(app) for app in apps]
+
+@router.get("/my-applications/{application_id}", response_model=ApplicationDetailOut)
+async def get_application(application_id: int, db: AsyncSession = Depends(aget_db)):
+    result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.zoning_use),
+            joinedload(PermitApplication.drainage_type),
+            joinedload(PermitApplication.zoning_district),
+            joinedload(PermitApplication.previous_land_use),
+            joinedload(PermitApplication.site_conditions),
+            joinedload(PermitApplication.architect),
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.applicant),
+            joinedload(PermitApplication.permit_type),
+            joinedload(PermitApplication.documents).joinedload(ApplicationDocument.document_type),
+            joinedload(PermitApplication.payments),
+        )
+        .filter(PermitApplication.id == application_id)
+    )
+    
+    app = result.unique().scalar_one_or_none()
+
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    # Manually serialize spatial fields to GeoJSON
+
+
+    data = ApplicationDetailOut.from_orm(app).dict()
+    data["parcel_geometry"] = serialize_geom(app.parcel_geometry)
+    data["spatial_data"] = serialize_geom(app.spatial_data)
+    data["project_location"] = serialize_geom(app.project_location)
+    return data
+
+
+@router.put("/my-applications/{application_id}", response_model=ApplicationUpdate)
+async def update_application(
+    application_id: int,
+    updates: ApplicationUpdate,
+    db: AsyncSession = Depends(aget_db)
+):
+    result = await db.execute(
+        select(PermitApplication).where(PermitApplication.id == application_id)
+    )
+    app = result.scalar_one_or_none()
+
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if app.status not in ("draft", "submitted"):
+        raise HTTPException(status_code=400, detail="This application cannot be edited.")
+
+    # Apply updates
+    for field, value in updates.dict(exclude_unset=True).items():
+        setattr(app, field, value)
+
+    await db.commit()
+    await db.refresh(app)
+
+    return app
+
+
+@router.get("/dashboard/applicant-map")
+async def get_dashboard_data(request: Request, db: AsyncSession = Depends(aget_db)):
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        payload = decode_jwt_token(token)
+        user_id = int(payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Fetch user permits + basic details
+    permit_result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.permit_type)
+        )
+        .filter(PermitApplication.applicant_id == user_id)
+    )
+    permits = permit_result.scalars().all()
+
+    # Group MMDAs related to user’s permits
+    mmda_ids = list({permit.mmda_id for permit in permits})
+
+    # Fetch MMDAs + permit stats
+    mmda_result = await db.execute(
+        select(MMDA)
+        .options(selectinload(MMDA.permit_applications))
+        .filter(MMDA.id.in_(mmda_ids))
+    )
+    mmdas = mmda_result.scalars().all()
+
+    mmda_data = []
+    for mmda in mmdas:
+        permits_in_mmda = mmda.permit_applications
+        status_counts = {}
+        for permit in permits_in_mmda:
+            status = permit.status.value if hasattr(permit.status, "value") else permit.status
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        mmda_data.append({
+            "id": mmda.id,
+            "name": mmda.name,
+            "region": mmda.region,
+            "type": mmda.type,
+            "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
+            "status_counts": status_counts,
+        })
+        
+
+    return {
+        "permits": [
+            {
+                "id": p.id,
+                "project_name": p.project_name,
+                "status": p.status.value if hasattr(p.status, "value") else p.status,
+                "permit_type": {"id": p.permit_type.id, "name": p.permit_type.name} if p.permit_type else None,
+                "mmda_id": p.mmda_id,
+                "parcel_geometry": serialize_geom(p.parcel_geometry),
+                "latitude": p.latitude,
+                "longitude": p.longitude,
+            }
+            for p in permits
+        ],
+        "mmdas": mmda_data,
+    }
+
+
 
 @router.get("/types", response_model=List[PermitTypeWithRequirements])
 async def get_permit_types_with_requirements(
