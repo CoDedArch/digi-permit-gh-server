@@ -1,5 +1,5 @@
 # app/schemas/permit_application.py
-from pydantic import BaseModel, Field, confloat, field_validator, model_validator
+from pydantic import BaseModel, Field, confloat, field_validator, model_validator, validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
 
@@ -178,16 +178,26 @@ class ApplicationOut(BaseModel):
 class ApplicationUpdate(BaseModel):
     project_name: Optional[str]
     project_description: Optional[str]
-    expected_start_date: Optional[datetime]
-    expected_end_date: Optional[datetime]
+    fire_safety_plan: Optional[str] = None
+    waste_management_plan: Optional[str] = None
+    expected_start_date: Optional[datetime] = None
+    expected_end_date: Optional[datetime] = None
     parcel_number: Optional[str]
-    project_address: Optional[str]
-    parking_spaces: Optional[int]
-    setbacks: Optional[Dict[str, float]]
-    floor_areas: Optional[Dict[str, float]]
-    site_conditions: Optional[Dict[str, str]]
-    estimated_cost: Optional[float]
-    construction_area: Optional[float]
+    estimated_cost: Optional[float] = None
+    construction_area: Optional[float] = None
+
+
+    @validator("expected_start_date", "expected_end_date", pre=True, always=True)
+    def make_timezone_aware(cls, value):
+        if value:
+            if isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value)
+                except ValueError:
+                    raise ValueError(f"Invalid datetime format: {value}")
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+        return value
 
 
 # Nested models
