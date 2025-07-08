@@ -119,7 +119,9 @@ async def update_application(
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
 
-    if app.status not in ("draft", "submitted"):
+    print("App status:", app.status.value)  # or use logger
+
+    if app.status.value not in ("draft", "submitted"):
         raise HTTPException(status_code=400, detail="This application cannot be edited.")
 
     # Apply updates
