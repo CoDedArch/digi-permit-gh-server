@@ -9,7 +9,9 @@ class Inspection(Base, TimestampMixin):
     
     id = Column(Integer, primary_key=True)
     application_id = Column(Integer, ForeignKey('permit_applications.id'), nullable=False)
-    inspection_officer_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    inspection_officer_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    applicant_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    mmda_id = Column(Integer, ForeignKey('mmdas.id'), nullable=False)
     inspection_type = Column(Enum(InspectionType), nullable=False)
     status = Column(Enum(InspectionStatus), default=InspectionStatus.PENDING)
     outcome = Column(Enum(InspectionOutcome))
@@ -18,6 +20,7 @@ class Inspection(Base, TimestampMixin):
     findings = Column(Text)
     recommendations = Column(Text)
     violations_found = Column(Text)
+    notes = Column(Text)
     is_reinspection = Column(Boolean, default=False)
     assigned_officer_id = Column(Integer, ForeignKey('users.id'))
     # Relationships
@@ -27,6 +30,8 @@ class Inspection(Base, TimestampMixin):
     back_populates="assigned_inspections",
     foreign_keys=[inspection_officer_id]
     )
+    applicant = relationship("User", foreign_keys=[applicant_id])
+    mmda = relationship("MMDA")
 
     
     def __repr__(self):
