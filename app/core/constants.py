@@ -4108,7 +4108,3 @@ COMMITTEES_DATA = [
 {"name": "Finance and Administration Sub-Committee", "description": "Oversees budget and administration"},
 {"name": "Development Planning Sub-Committee", "description": "Handles development plans"}
 ]
-
-PREVIOUS_LAND_USE = [
-
-]
