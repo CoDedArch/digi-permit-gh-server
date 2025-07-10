@@ -3,9 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.core.database import aget_db
 from app.core.security import decode_jwt_token
-from app.models.user import User, UserDocument, ProfessionalInCharge
-from app.core.constants import DocumentType, VerificationStage
-from app.schemas.User import OnboardingData
+from app.models.user import CommitteeMember, DepartmentStaff, User, UserDocument, ProfessionalInCharge, UserProfile
+from app.core.constants import DocumentType, UserRole, VerificationStage
+from app.schemas.User import OnboardingData, StaffOnboardingRequest
 from datetime import datetime
 
 from app.utils.contact_utils import normalize_contact
@@ -84,3 +84,87 @@ async def complete_onboarding(
     await db.commit()
 
     return {"message": "Onboarding complete", "user_id": user.id}
+
+
+@router.post("/user/staff/onboarding")
+async def onboard_staff(
+    payload: StaffOnboardingRequest,
+    request: Request,
+    db: AsyncSession = Depends(aget_db),
+):
+    # --- Step 1: Extract token and get user ---
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        token_payload = decode_jwt_token(token)
+        user_id = int(token_payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # --- Step 2: Validate and update role ---
+    try:
+        new_role = UserRole(payload.role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid role specified")
+
+    user.role = new_role
+    user.is_active = True  # Enable user
+
+    # --- Step 3: Get or create user profile ---
+    result = await db.execute(
+        select(UserProfile).where(UserProfile.user_id == user.id)
+    )
+    profile = result.scalar_one_or_none()
+
+    if not profile:
+        profile = UserProfile(user_id=user.id)
+        db.add(profile)
+
+    profile.specialization = payload.specialization
+    profile.work_email = payload.work_email
+    profile.staff_number = payload.staff_number
+    profile.designation = payload.designation
+
+    # --- Step 4: Add to DepartmentStaff if not already linked ---
+    result = await db.execute(
+        select(DepartmentStaff).where(
+            DepartmentStaff.user_id == user.id,
+            DepartmentStaff.department_id == payload.department_id
+        )
+    )
+    dept_staff = result.scalar_one_or_none()
+
+    if not dept_staff:
+        dept_staff = DepartmentStaff(
+            department_id=payload.department_id,
+            user_id=user.id,
+            position=payload.designation or "Officer"
+        )
+        db.add(dept_staff)
+
+    # --- Step 5: Add to CommitteeMember if not already linked ---
+    result = await db.execute(
+        select(CommitteeMember).where(
+            CommitteeMember.user_id == user.id,
+            CommitteeMember.committee_id == payload.committee_id
+        )
+    )
+    committee_member = result.scalar_one_or_none()
+
+    if not committee_member:
+        committee_member = CommitteeMember(
+            committee_id=payload.committee_id,
+            user_id=user.id,
+            role=payload.role.replace("_", " ").title()
+        )
+        db.add(committee_member)
+
+    await db.commit()
+
+    return {"message": "User onboarding completed successfully"}
