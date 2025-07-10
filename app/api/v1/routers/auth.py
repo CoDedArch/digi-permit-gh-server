@@ -5,11 +5,12 @@ from fastapi.responses import JSONResponse
 import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.user import ApplicantType, User
+from app.core.constants import VerificationStage
+from app.models.user import ApplicantType, User, UserProfile
 from app.schemas.AthenticationSchemas import SendOtpRequest, VerifyOtpRequest
 from authlib.integrations.starlette_client import OAuth
 from app.core.database import aget_db
-from app.schemas.User import ApplicantTypeOut
+from app.schemas.User import ApplicantTypeOut, CurrentUserResponse, GhanaCardInput, UserDocumentOut, UserOut, UserProfileOut
 from app.services.otpService import OtpService
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -182,7 +183,8 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(aget_db)
             "authenticated": True,
             "user_id": payload.get("sub"),
             "onboarding": payload.get("onboarding", False),
-            "role": payload.get("role", "applicant"),
+            "role": user.role.value,
+            "is_active": user.is_active,
             "applicant_type_code": user.applicant_type_code
         }
         
@@ -195,6 +197,93 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(aget_db)
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=401, detail="Authentication failed")
+    
+
+# get user with Profile Data 
+from sqlalchemy.future import select
+from sqlalchemy.orm import joinedload
+
+@router.get("/me/profile", response_model=CurrentUserResponse)
+async def get_current_user(request: Request, db: AsyncSession = Depends(aget_db)):
+    token = request.cookies.get("auth_token")
+    print("Raw token from cookies:", token)
+    
+    if not token:
+        print("No token found in cookies")
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = decode_jwt_token(token)
+        user_id = int(payload.get("sub"))
+
+        result = await db.execute(
+            select(User)
+            .options(joinedload(User.profile), joinedload(User.documents))
+            .where(User.id == user_id)
+        )
+        user = result.unique().scalar_one_or_none()
+
+        print ("user is", user)
+
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+
+        return CurrentUserResponse(
+            authenticated=True,
+            user=UserOut.from_orm(user),
+            profile=UserProfileOut.from_orm(user.profile) if user.profile else None,
+            documents = [UserDocumentOut.from_orm(doc) for doc in user.documents]
+        )
+
+    except jwt.ExpiredSignatureError:
+        print("Token expired")
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError as e:
+        print(f"Invalid token: {str(e)}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+@router.post("/me/ghana-card", status_code=200)
+async def submit_ghana_card(
+    request: Request,
+    payload: GhanaCardInput,
+    db: AsyncSession = Depends(aget_db)
+):
+    token = request.cookies.get("auth_token")
+    print("Token is", token)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        user_id = int(decode_jwt_token(token).get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Fetch user with existing profile
+    result = await db.execute(select(User).options(joinedload(User.profile)).where(User.id == user_id))
+    user = result.unique().scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.profile:
+        raise HTTPException(status_code=400, detail="Profile already exists")
+
+    # Create new profile
+    profile = UserProfile(user_id=user.id, ghana_card_number=payload.ghana_card_number)
+    db.add(profile)
+
+    # Update user status
+    user.is_active = True
+    user.verification_stage = VerificationStage.FULLY_VERIFIED
+
+    await db.commit()
+
+    return {"message": "Ghana card submitted successfully."}
+
     
 # Simple but Powerful Logout
 @router.post("/logout")
