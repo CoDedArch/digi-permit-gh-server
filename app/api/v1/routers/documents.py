@@ -13,7 +13,7 @@ from app.models.application import PermitApplication
 from app.models.document import ApplicationDocument, PermitTypeModel, PermitDocumentRequirement, DocumentTypeModel
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
-from app.models.user import MMDA
+from app.models.user import MMDA, Department, DepartmentStaff
 from app.models.zoning import DrainageType, PreviousLandUse, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
 from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, PreviousLandUseOut, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
 from app.schemas.permit_application import ApplicationDetailOut, ApplicationOut, ApplicationUpdate
@@ -203,6 +203,117 @@ async def get_dashboard_data(request: Request, db: AsyncSession = Depends(aget_d
         "mmdas": mmda_data,
     }
 
+
+@router.get("/dashboard/reviewer-map")
+async def get_reviewer_dashboard_data(request: Request, db: AsyncSession = Depends(aget_db)):
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        payload = decode_jwt_token(token)
+        user_id = int(payload.get("sub"))
+        
+        # Get the reviewer's department and MMDA info
+        staff_result = await db.execute(
+            select(DepartmentStaff)
+            .join(Department)
+            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
+            .filter(DepartmentStaff.user_id == user_id)
+        )
+        staff = staff_result.scalars().first()
+        
+        if not staff:
+            raise HTTPException(status_code=403, detail="User is not a staff member")
+        
+        mmda_id = staff.department.mmda_id
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Fetch all permits for the reviewer's MMDA (work jurisdiction)
+    mmda_permits_result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.permit_type)
+        )
+        .filter(PermitApplication.mmda_id == mmda_id)
+    )
+    mmda_permits = mmda_permits_result.scalars().all()
+
+    # Fetch any personal permits the reviewer has applied for (in any MMDA)
+    personal_permits_result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.permit_type)
+        )
+        .filter(PermitApplication.applicant_id == user_id)
+        .filter(PermitApplication.mmda_id != mmda_id)  # Exclude those already in work MMDA
+    )
+    personal_permits = personal_permits_result.scalars().all()
+
+    print("PERSONAL PERMITS IS", personal_permits)
+
+    # Get IDs of personal permits for efficient checking
+    
+    personal_permit_ids = {p.id for p in personal_permits}
+    
+    # Combine both permit lists
+    all_permits = mmda_permits + personal_permits
+
+    # Get all unique MMDAs involved (work MMDA + any personal permit MMDAs)
+    mmda_ids = {mmda_id} | {p.mmda_id for p in personal_permits}
+
+    # Fetch all relevant MMDAs and their permit stats
+    mmdas_data = []
+    for current_mmda_id in mmda_ids:
+        mmda_result = await db.execute(
+            select(MMDA)
+            .options(selectinload(MMDA.permit_applications))
+            .filter(MMDA.id == current_mmda_id)
+        )
+        mmda = mmda_result.scalars().first()
+
+        if mmda:
+            # Calculate status counts for this MMDA
+            status_counts = {
+                "submitted": 0,
+                "under_review": 0,
+                "approved": 0,
+                "rejected": 0
+            }
+            for permit in mmda.permit_applications:
+                status = permit.status.value if hasattr(permit.status, "value") else permit.status
+                if status in status_counts:
+                    status_counts[status] += 1
+
+            mmdas_data.append({
+                "id": mmda.id,
+                "name": mmda.name,
+                "region": mmda.region,
+                "type": mmda.type,
+                "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
+                "status_counts": status_counts,
+            })
+
+    return {
+        "permits": [
+            {
+                "id": p.id,
+                "project_name": p.project_name,
+                "status": p.status.value if hasattr(p.status, "value") else p.status,
+                "permit_type": {"id": p.permit_type.id, "name": p.permit_type.name} if p.permit_type else None,
+                "mmda_id": p.mmda_id,
+                "parcel_geometry": serialize_geom(p.parcel_geometry),
+                "latitude": p.latitude,
+                "longitude": p.longitude,
+                "is_personal": p.id in personal_permit_ids,  # Flag for personal permits
+            }
+            for p in all_permits
+        ],
+        "mmdas": mmdas_data,
+    }
 
 
 @router.get("/types", response_model=List[PermitTypeWithRequirements])
