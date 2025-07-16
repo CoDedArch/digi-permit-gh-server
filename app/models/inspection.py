@@ -25,7 +25,7 @@ class Inspection(Base, TimestampMixin):
     assigned_officer_id = Column(Integer, ForeignKey('users.id'))
     # Relationships
     application = relationship("PermitApplication", back_populates="inspections")
-    inspection_officer = relationship(
+    inspection_officer = relationship( 
     "User",
     back_populates="assigned_inspections",
     foreign_keys=[inspection_officer_id]
