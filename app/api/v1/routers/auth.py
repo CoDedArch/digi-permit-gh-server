@@ -99,8 +99,8 @@ async def verify_otp(
             key="auth_token",
             value=token,
             httponly=True,
-            secure=True,  # Must be True for production
-            samesite="none",
+            secure=False,  # Must be True for production
+            samesite="lax",
             domain="localhost",  # Explicit domain for local development
             path="/",  # Make cookie available for all paths
             max_age=int(expires.total_seconds())
