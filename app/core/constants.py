@@ -173,7 +173,7 @@ class ApplicationStatus(enum.Enum):
     REJECTED = "rejected"
     INSPECTION_PENDING = "inspection_pending"
     INSPECTION_COMPLETED = "inspected"
-    FOR_APPROVAL_OR_REJECTION = "approval requested"
+    FOR_APPROVAL_OR_REJECTION = "approval_requested"
     ISSUED = "issued"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -376,6 +376,11 @@ class InspectionType(enum.Enum):
     PLUMBING = "plumbing"
     FINAL = "final"
     SPECIAL = "special"
+    INITIAL = "initial"
+    FOLLOW_UP = "follow_up"
+    COMPLIANCE = "compliance"
+    SAFETY = "safety"
+    REINSPECTION = "reinspection"
 
 class InspectionStatus(enum.Enum):
     PENDING = "pending"
