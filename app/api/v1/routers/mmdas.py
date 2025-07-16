@@ -191,6 +191,7 @@ async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_d
             User.first_name,
             User.last_name,
             PermitApplication.submitted_at,
+            PermitApplication.created_at,
             PermitApplication.status,
             PermitTypeModel.standard_duration_days
         )
@@ -209,15 +210,17 @@ async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_d
     applications = result.all()
     print("APPLICATIONS ARE", applications)
 
+
     queue_data = []
     for app in applications:
+        print("Standard Duration:", app.standard_duration_days)
         # Handle cases where submitted_at is None
         if app.submitted_at is None:
             days_in_queue = 0  # or some default value
             submitted_date = now  # or some default date
         else:
             days_in_queue = (now - app.submitted_at).days
-            submitted_date = app.submitted_at
+            submitted_date = app.created_at
 
         standard_duration = app.standard_duration_days
         
