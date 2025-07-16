@@ -1,4 +1,5 @@
 # app/schemas/permit_application.py
+import re
 from pydantic import BaseModel, Field, confloat, field_validator, model_validator, validator
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
@@ -218,10 +219,57 @@ class DrainageTypeOut(BaseModel):
 class ZoningDistrictOut(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
+    max_height: Optional[float] = None  # in meters
+    max_coverage: Optional[float] = None  # as decimal (0.45 = 45%)
+    min_plot_size: Optional[float] = None  # in m²
+    density: Optional[str] = None  # formatted density range
+    parking_requirement: Optional[str] = None
+    setbacks: Optional[dict] = None  # parsed into structured format
+    population_served: Optional[str] = None
+    buffer_zones: Optional[str] = None
 
     model_config = {
-    "from_attributes": True
+        "from_attributes": True
     }
+
+    @field_validator('density', mode='before')
+    def format_density(cls, v):
+        if not v:
+            return None
+        # Extract numeric values from various density formats
+        if "dwellings" in v.lower():
+            return re.sub(r'[^\d-><]', '', v).strip()
+        elif "persons" in v.lower():
+            return re.sub(r'[^\d-><]', '', v).strip()
+        return v
+
+    @field_validator('setbacks', mode='before')
+    def parse_setbacks(cls, v):
+        if not v:
+            return None
+            
+        setbacks = {}
+        try:
+            parts = [p.strip() for p in v.split(',')]
+            for part in parts:
+                if 'front' in part:
+                    setbacks['front'] = float(re.search(r'(\d+)m', part).group(1))
+                elif 'rear' in part:
+                    setbacks['rear'] = float(re.search(r'(\d+)m', part).group(1))
+                elif 'sides' in part:
+                    setbacks['sides'] = float(re.search(r'(\d+)m', part).group(1))
+        except Exception:
+            return None
+        return setbacks
+
+
+    @field_validator('parking_requirement', mode='before')
+    def clean_parking_requirement(cls, v):
+        return v if v else None
+
+    @field_validator('population_served', mode='before')
+    def clean_population_served(cls, v):
+        return v if v else None
 
 class PreviousLandUseOut(BaseModel):
     name: Optional[str] = None
