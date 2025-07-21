@@ -66,12 +66,11 @@ async def request_inspection(
 
 
 
-@router.get("/user", response_model=list[InspectionOut])
+@router.get("/user")
 async def get_user_inspections(
     request: Request,
     db: AsyncSession = Depends(aget_db),
 ):
-    # Extract and decode token
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -79,17 +78,43 @@ async def get_user_inspections(
     try:
         decoded = decode_jwt_token(token)
         user_id = int(decoded.get("sub"))
+        user_role = decoded.get("role")  # make sure you include this in your token
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Query for inspections by applicant ID
-    result = await db.execute(
+    # Inspections requested by this user
+    requested_stmt = (
         select(Inspection)
-        .options(joinedload(Inspection.application))
+        .options(
+            joinedload(Inspection.application),
+            joinedload(Inspection.inspection_officer),
+        )
         .where(Inspection.applicant_id == user_id)
     )
-    inspections = result.scalars().all()
-    return inspections
+
+    requested_result = await db.execute(requested_stmt)
+    requested_inspections = requested_result.scalars().unique().all()
+
+    assigned_inspections = []
+    if user_role == "inspection_officer":
+        assigned_stmt = (
+            select(Inspection)
+            .options(
+                joinedload(Inspection.application),
+                joinedload(Inspection.inspection_officer),
+            )
+            .where(Inspection.inspection_officer_id == user_id)
+        )
+
+        assigned_result = await db.execute(assigned_stmt)
+        assigned_inspections = assigned_result.scalars().unique().all()
+
+    return {
+        "requested": [InspectionOut.from_orm(i) for i in requested_inspections],
+        "assigned": [InspectionOut.from_orm(i) for i in assigned_inspections],
+    }
+
+    
 
 @router.get("/{inspection_id}", response_model=InspectionDetailOut)
 async def get_inspection_detail(

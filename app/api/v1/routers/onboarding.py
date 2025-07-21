@@ -3,7 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.core.database import aget_db
 from app.core.security import decode_jwt_token
-from app.models.user import CommitteeMember, DepartmentStaff, User, UserDocument, ProfessionalInCharge, UserProfile
+from sqlalchemy.orm import joinedload
+from app.models.user import Committee, CommitteeMember, Department, DepartmentStaff, User, UserDocument, ProfessionalInCharge, UserProfile
 from app.core.constants import DocumentType, UserRole, VerificationStage
 from app.schemas.User import OnboardingData, StaffOnboardingRequest
 from datetime import datetime
@@ -114,7 +115,7 @@ async def onboard_staff(
         raise HTTPException(status_code=400, detail="Invalid role specified")
 
     user.role = new_role
-    user.is_active = True  # Enable user
+    user.is_active = True
 
     # --- Step 3: Get or create user profile ---
     result = await db.execute(
@@ -131,7 +132,25 @@ async def onboard_staff(
     profile.staff_number = payload.staff_number
     profile.designation = payload.designation
 
-    # --- Step 4: Add to DepartmentStaff if not already linked ---
+    # --- Step 4: Reassign Department and MMDA ---
+    # Remove old DepartmentStaff entries from other MMDAs
+    existing_staff = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(joinedload(DepartmentStaff.department))
+        .filter(DepartmentStaff.user_id == user.id)
+    )
+    for staff_record in existing_staff.scalars():
+        if staff_record.department.mmda_id != payload.mmda_id:
+            await db.delete(staff_record)
+
+
+    # Ensure department belongs to the provided MMDA
+    department = await db.get(Department, payload.department_id)
+    if not department or department.mmda_id != payload.mmda_id:
+        raise HTTPException(status_code=400, detail="Department does not belong to the selected MMDA")
+
+    # Create or update DepartmentStaff
     result = await db.execute(
         select(DepartmentStaff).where(
             DepartmentStaff.user_id == user.id,
@@ -147,8 +166,27 @@ async def onboard_staff(
             position=payload.designation or "Officer"
         )
         db.add(dept_staff)
+    else:
+        dept_staff.position = payload.designation or dept_staff.position
 
-    # --- Step 5: Add to CommitteeMember if not already linked ---
+    # --- Step 5: Reassign Committees if needed ---
+    # Remove committee memberships from other MMDAs
+    existing_committees = await db.execute(
+        select(CommitteeMember)
+        .join(Committee)
+        .options(joinedload(CommitteeMember.committee))
+        .filter(CommitteeMember.user_id == user.id)
+    )
+    for committee_member in existing_committees.scalars():
+        if committee_member.committee.mmda_id != payload.mmda_id:
+            await db.delete(committee_member)
+
+    # Ensure committee belongs to provided MMDA
+    committee = await db.get(Committee, payload.committee_id)
+    if not committee or committee.mmda_id != payload.mmda_id:
+        raise HTTPException(status_code=400, detail="Committee does not belong to the selected MMDA")
+
+    # Create or update CommitteeMember
     result = await db.execute(
         select(CommitteeMember).where(
             CommitteeMember.user_id == user.id,
@@ -164,6 +202,8 @@ async def onboard_staff(
             role=payload.role.replace("_", " ").title()
         )
         db.add(committee_member)
+    else:
+        committee_member.role = payload.role.replace("_", " ").title()
 
     await db.commit()
 

@@ -75,9 +75,10 @@ async def create_application(
     site_conditions = []
     if data.siteConditionIds:
         result = await db.execute(
-        select(SiteCondition).where(SiteCondition.id.in_(data.siteConditionIds))
-    )
-    site_conditions = result.scalars().all()
+            select(SiteCondition).where(SiteCondition.id.in_(data.siteConditionIds))
+        )
+        site_conditions = result.scalars().all()
+
 
     # Create new application
     application = PermitApplication(
