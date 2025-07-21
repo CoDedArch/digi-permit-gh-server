@@ -42,6 +42,9 @@ class ApplicationReviewStep(Base):
     flag_reason = Column(Text, nullable=True)
     flagged_at = Column(DateTime, nullable=True)
 
+    application = relationship("PermitApplication", back_populates="review_steps")
+    reviewer = relationship("User", back_populates="review_steps")
+
     __table_args__ = (
         UniqueConstraint("application_id", "reviewer_id", "step_name"),
     )

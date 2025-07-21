@@ -54,6 +54,7 @@ class User(Base, TimestampMixin):
     back_populates="review_officer",
     foreign_keys="ApplicationReview.review_officer_id"
     )
+    review_steps = relationship("ApplicationReviewStep", back_populates="reviewer")
 
 
 

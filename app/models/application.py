@@ -102,6 +102,7 @@ class PermitApplication(Base):
         back_populates="application",
         order_by="ApplicationStatusHistory.changed_at.desc()"
     )
+    review_steps = relationship("ApplicationReviewStep", back_populates="application")
     
     # Indexes
     __table_args__ = (
