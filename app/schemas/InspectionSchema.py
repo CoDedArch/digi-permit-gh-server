@@ -14,19 +14,28 @@ class InspectionRequest(BaseModel):
 class ApplicationOut(BaseModel):
     project_name: str
 
+    class Config:
+        from_attributes = True
+
+
 class OfficerOut(BaseModel):
     first_name: str
     last_name: str
+
+    class Config:
+        from_attributes = True
+
 
 class InspectionOut(BaseModel):
     id: int
     status: str
     scheduled_date: Optional[datetime]
-    application: ApplicationOut  # ✅ renamed from 'permit'
-    inspection_officer: Optional[OfficerOut] = None  # ✅ nested officer
+    application: ApplicationOut = None
+    inspection_officer: Optional[OfficerOut] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
 
 
 
