@@ -354,8 +354,13 @@ class Setbacks(BaseModel):
 class FloorAreas(BaseModel):
     density: Optional[float]
     bufferZones: Optional[float]
+    maxHeight: Optional[float]
+    maxCoverage: Optional[float]
+    minPlotSize: Optional[float]
+    landscapeArea: Optional[float]
+    occupantCapacity: Optional[float]
 
-    @field_validator('density', 'bufferZones', mode="before")
+    @field_validator('density', 'bufferZones', 'maxHeight', 'maxCoverage', 'minPlotSize', 'landscapeArea', 'occupantCapacity', mode="before")
     @classmethod
     def convert_empty_string_to_none(cls, v):
         if v == "":
