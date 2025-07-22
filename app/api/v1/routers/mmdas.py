@@ -805,7 +805,11 @@ async def get_recent_activities(request: Request, db: AsyncSession = Depends(age
         .join(User, PermitApplication.applicant_id == User.id)
         .filter(PermitApplication.mmda_id == mmda_id)
         .filter(PermitApplication.updated_at >= recent_time)
-        .filter(PermitApplication.status.in_(["approved", "rejected", "under_review"]))
+        .filter(PermitApplication.status.in_([
+            ApplicationStatus.APPROVED,
+            ApplicationStatus.REJECTED,
+            ApplicationStatus.UNDER_REVIEW
+        ]))
         .order_by(PermitApplication.updated_at.desc())
         .limit(10)
     )
