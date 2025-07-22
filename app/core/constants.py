@@ -30,6 +30,31 @@ class PermitType(str, enum.Enum):
         }
         return names[self.value]
 
+PERMIT_TYPE_TO_DEPARTMENT = {
+    PermitType.NEW_CONSTRUCTION: "PPD",  # Physical Planning Department
+    PermitType.RENOVATION_ALTERATION: "PPD",
+    PermitType.CHANGE_OF_USE: "PPD",
+    PermitType.DEMOLITION: "PPD",
+    PermitType.TEMPORARY_STRUCTURE: "WRK",  # Works Department
+    PermitType.SIGN_PERMIT: "PPD",
+    PermitType.SUBDIVISION: "PPD",
+    PermitType.FITTINGS_INSTALLATION: "WRK",
+    PermitType.HOARDING: "WRK",
+    PermitType.SAND_WEANING: "WRK",
+}
+
+PERMIT_TYPE_TO_COMMITTEE = {
+    PermitType.NEW_CONSTRUCTION: "Works Sub-Committee",
+    PermitType.RENOVATION_ALTERATION: "Works Sub-Committee",
+    PermitType.CHANGE_OF_USE: "Development Planning Sub-Committee",
+    PermitType.DEMOLITION: "Works Sub-Committee",
+    PermitType.TEMPORARY_STRUCTURE: "Works Sub-Committee",
+    PermitType.SIGN_PERMIT: "Development Planning Sub-Committee",
+    PermitType.SUBDIVISION: "Development Planning Sub-Committee",
+    PermitType.FITTINGS_INSTALLATION: "Works Sub-Committee",
+    PermitType.HOARDING: "Works Sub-Committee",
+    PermitType.SAND_WEANING: "Works Sub-Committee",
+}
 
 PERMIT_TYPE_DATA = [
     {
