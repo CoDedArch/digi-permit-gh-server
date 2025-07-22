@@ -21,6 +21,8 @@ class PermitApplication(Base):
     applicant_id = Column(Integer, ForeignKey('users.id', ondelete="CASCADE"), nullable=False)
     permit_type_id = Column(String(50), ForeignKey('permit_types.id'), nullable=False)
     zoning_district_id = Column(Integer, ForeignKey("zoning_districts.id"), nullable=True)
+    department_id = Column(Integer, ForeignKey('departments.id'))
+    committee_id = Column(Integer, ForeignKey('committees.id'))
     zoning_use_id = Column(Integer, ForeignKey("zoning_permitted_uses.id"), nullable=True)
     drainage_type_id = Column(Integer, ForeignKey("drainage_types.id"))
     status = Column(SQLEnum(ApplicationStatus), default=ApplicationStatus.DRAFT, nullable=False, index=True)
@@ -87,6 +89,8 @@ class PermitApplication(Base):
         back_populates="application",
         order_by="ApplicationReview.created_at.desc()"
     )
+    department = relationship("Department")
+    committee = relationship("Committee")
     inspections = relationship(
         "Inspection",
         back_populates="application",
