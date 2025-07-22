@@ -1,5 +1,5 @@
 from datetime import datetime, time, timedelta
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, case, func, or_, select
@@ -11,7 +11,7 @@ from app.models.application import PermitApplication
 from app.models.document import PermitTypeModel
 from app.models.inspection import Inspection
 from app.models.review import ApplicationReview
-from app.models.user import MMDA, Committee, Department, DepartmentStaff, User
+from app.models.user import MMDA, Committee, CommitteeMember, Department, DepartmentStaff, User
 from app.schemas.User import CommitteeBase, DepartmentBase
 from app.schemas.mmda import MMDABase  # You’ll need this schema
 
@@ -40,7 +40,12 @@ async def get_mmda_committees(mmda_id: int, db: AsyncSession = Depends(aget_db))
 
 
 @router.get("/dashboard/reviewer-stats")
-async def get_reviewer_stats(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_reviewer_stats(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db)
+):
+    """Get statistics for reviewer dashboard, filtered by department and committee assignments"""
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -48,36 +53,57 @@ async def get_reviewer_stats(request: Request, db: AsyncSession = Depends(aget_d
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-
-        # Get the reviewer's department and MMDA info
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-
-        mmda_id = staff.department.mmda_id
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Get reviewer's department and committee assignments
+    staff_result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            joinedload(DepartmentStaff.department),
+            joinedload(DepartmentStaff.committee_memberships)
+            .joinedload(CommitteeMember.committee)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    staff = staff_result.scalars().first()
+    
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
 
     now = datetime.now()
     today_start = datetime.combine(now.date(), time.min)
     today_end = datetime.combine(now.date(), time.max)
 
-    # 1. Pending Reviews
+    # Base filter for applications this reviewer should see
+    base_filter = and_(
+        PermitApplication.mmda_id == staff.department.mmda_id,
+        PermitApplication.department_id == staff.department_id
+    )
+
+    if not staff.is_head:
+        # Regular reviewers only see applications from their committees
+        committee_ids = [cm.committee.id for cm in staff.committee_memberships]
+        base_filter = and_(
+            base_filter,
+            or_(
+                PermitApplication.committee_id.in_(committee_ids),
+                PermitApplication.committee_id.is_(None)  # Department-only reviews
+            )
+        )
+
+    # 1. Pending Reviews (filtered by department/committee)
     pending_result = await db.execute(
         select(func.count(PermitApplication.id))
-        .filter(PermitApplication.mmda_id == mmda_id)
-        .filter(PermitApplication.status == ApplicationStatus.SUBMITTED)
+        .where(
+            base_filter,
+            PermitApplication.status == ApplicationStatus.SUBMITTED
+        )
     )
     pending_review = pending_result.scalar_one() or 0
 
-    # 2. Overdue Applications
+    # 2. Overdue Applications (filtered by department/committee)
     permits_with_duration = await db.execute(
         select(
             PermitApplication.id,
@@ -86,96 +112,113 @@ async def get_reviewer_stats(request: Request, db: AsyncSession = Depends(aget_d
             PermitTypeModel.standard_duration_days
         )
         .join(PermitTypeModel)
-        .filter(PermitApplication.mmda_id == mmda_id)
+        .where(base_filter)
     )
 
     overdue_count = 0
     for permit in permits_with_duration:
         if not permit.submitted_at:
             continue
+            
         time_in_review = now - permit.submitted_at
-        standard_duration = permit.standard_duration_days
+        standard_duration = permit.standard_duration_days or 30  # Default 30 days
 
         if (permit.status == ApplicationStatus.SUBMITTED and time_in_review > timedelta(days=2)):
             overdue_count += 1
-        elif (permit.status == ApplicationStatus.UNDER_REVIEW and time_in_review > timedelta(days=standard_duration / 2)):
+        elif (permit.status == ApplicationStatus.UNDER_REVIEW and 
+              time_in_review > timedelta(days=standard_duration / 2)):
             overdue_count += 1
-        elif (permit.status in [ApplicationStatus.SUBMITTED, ApplicationStatus.UNDER_REVIEW] and time_in_review > timedelta(days=standard_duration)):
+        elif time_in_review > timedelta(days=standard_duration):
             overdue_count += 1
 
-    # ✅ 3. Completed Today — MMDA-wide
-    completed_today_mmda_result = await db.execute(
+    # 3. Completed Today - Department/Committee scope
+    completed_today_result = await db.execute(
         select(func.count(PermitApplication.id))
-        .filter(PermitApplication.mmda_id == mmda_id)
-        .filter(
+        .where(
+            base_filter,
             or_(
                 PermitApplication.status == ApplicationStatus.APPROVED,
                 PermitApplication.status == ApplicationStatus.REJECTED
-            )
+            ),
+            PermitApplication.updated_at.between(today_start, today_end)
         )
-        .filter(PermitApplication.updated_at.between(today_start, today_end))
     )
-    completed_today_mmda = completed_today_mmda_result.scalar_one() or 0
+    completed_today = completed_today_result.scalar_one() or 0
 
-    # ✅ 4. Completed Today — Reviewer
+    # 4. Reviewer's Completed Today
     completed_today_reviewer_result = await db.execute(
         select(func.count())
         .select_from(ApplicationReview)
-        .filter(
+        .join(PermitApplication, ApplicationReview.application_id == PermitApplication.id)
+        .where(
             ApplicationReview.review_officer_id == user_id,
             ApplicationReview.status == ReviewStatus.COMPLETED,
-            ApplicationReview.updated_at.between(today_start, today_end)
+            ApplicationReview.updated_at.between(today_start, today_end),
+            base_filter  # Ensure it's within reviewer's scope
         )
     )
     completed_today_reviewer = completed_today_reviewer_result.scalar_one() or 0
 
-    # ✅ 5. Avg Review Time — MMDA-wide
-    avg_mmda_result = await db.execute(
+    # 5. Average Review Time - Department/Committee scope
+    avg_review_time_result = await db.execute(
         select(
             func.avg(
                 func.extract('epoch', PermitApplication.updated_at - PermitApplication.submitted_at) / 86400
             )
         )
-        .filter(PermitApplication.mmda_id == mmda_id)
-        .filter(
+        .where(
+            base_filter,
             or_(
                 PermitApplication.status == ApplicationStatus.APPROVED,
                 PermitApplication.status == ApplicationStatus.REJECTED
-            )
+            ),
+            PermitApplication.submitted_at.isnot(None)
         )
-        .filter(PermitApplication.submitted_at.isnot(None))
     )
-    avg_review_time_mmda = avg_mmda_result.scalar_one() or 0
-    avg_review_time_mmda_rounded = round(float(avg_review_time_mmda), 1) if avg_review_time_mmda else 0
+    avg_review_time = avg_review_time_result.scalar_one() or 0
+    avg_review_time_rounded = round(float(avg_review_time), 1) if avg_review_time else 0
 
-    # ✅ 6. Avg Review Time — Reviewer
-    avg_reviewer_result = await db.execute(
+    # 6. Reviewer's Average Review Time
+    avg_reviewer_time_result = await db.execute(
         select(
             func.avg(
                 func.extract('epoch', ApplicationReview.updated_at - ApplicationReview.created_at) / 86400
             )
         )
-        .filter(
+        .join(PermitApplication, ApplicationReview.application_id == PermitApplication.id)
+        .where(
             ApplicationReview.review_officer_id == user_id,
-            ApplicationReview.status == ReviewStatus.COMPLETED
+            ApplicationReview.status == ReviewStatus.COMPLETED,
+            base_filter  # Ensure it's within reviewer's scope
         )
     )
-    avg_review_time_reviewer = avg_reviewer_result.scalar_one() or 0
-    avg_review_time_reviewer_rounded = round(float(avg_review_time_reviewer), 1) if avg_review_time_reviewer else 0
+    avg_reviewer_time = avg_reviewer_time_result.scalar_one() or 0
+    avg_reviewer_time_rounded = round(float(avg_reviewer_time), 1) if avg_reviewer_time else 0
 
     return {
         "pending_review": pending_review,
         "overdue": overdue_count,
-        "completed_today_mmda": completed_today_mmda,
+        "completed_today": completed_today,
         "completed_today_reviewer": completed_today_reviewer,
-        "avg_review_time_days_mmda": avg_review_time_mmda_rounded,
-        "avg_review_time_days_reviewer": avg_review_time_reviewer_rounded,
+        "avg_review_time_days": avg_review_time_rounded,
+        "avg_review_time_days_reviewer": avg_reviewer_time_rounded,
+        # "department": staff.department.name,
+        # "is_department_head": staff.is_head,
+        # "committee_count": len(staff.committee_memberships)
     }
 
 
 
 @router.get("/dashboard/reviewer-queue")
-async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_reviewer_queue(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db),
+    status: Optional[ApplicationStatus] = None
+):
+    """
+    Get applications in the reviewer's queue, filtered by their department and committee assignments.
+    """
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -183,28 +226,31 @@ async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_d
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-        
-        # Get the reviewer's department and MMDA info
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-        
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-        
-        mmda_id = staff.department.mmda_id
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Get reviewer's department and committee assignments
+    staff_result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            joinedload(DepartmentStaff.department)
+            .joinedload(Department.mmda),
+            joinedload(DepartmentStaff.committee_memberships)
+            .joinedload(CommitteeMember.committee)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    staff = staff_result.scalars().first()
+    
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
 
     # Get current date and time
     now = datetime.now()
 
-    # First fetch all relevant applications with their standard durations
-    result = await db.execute(
+    # Base query with all necessary joins
+    query = (
         select(
             PermitApplication.id,
             PermitApplication.application_number,
@@ -214,41 +260,61 @@ async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_d
             PermitApplication.submitted_at,
             PermitApplication.created_at,
             PermitApplication.status,
-            PermitTypeModel.standard_duration_days
+            PermitTypeModel.standard_duration_days,
+            Department.name.label("department_name"),
+            Committee.name.label("committee_name")
         )
         .join(PermitTypeModel, PermitApplication.permit_type_id == PermitTypeModel.id)
         .join(User, PermitApplication.applicant_id == User.id)
-        .filter(PermitApplication.mmda_id == mmda_id)
-        .filter(
+        .join(Department, PermitApplication.department_id == Department.id)
+        .join(Committee, PermitApplication.committee_id == Committee.id)
+        .where(PermitApplication.mmda_id == staff.department.mmda_id)
+    )
+
+    # Filter by status if provided
+    if status:
+        query = query.where(PermitApplication.status == status)
+    else:
+        query = query.where(
             or_(
                 PermitApplication.status == ApplicationStatus.SUBMITTED,
                 PermitApplication.status == ApplicationStatus.UNDER_REVIEW
             )
         )
-    )
 
-    # Get all rows from the result
+    # Filter by reviewer's department and committees
+    if staff.is_head:
+        # Department heads see all applications in their department
+        query = query.where(PermitApplication.department_id == staff.department_id)
+    else:
+        # Regular reviewers see applications where:
+        # 1. They're assigned to the department AND
+        # 2. They're members of the committee OR it's a department-level review
+        committee_ids = [cm.committee.id for cm in staff.committee_memberships]
+        query = query.where(
+            and_(
+                PermitApplication.department_id == staff.department_id,
+                or_(
+                    PermitApplication.committee_id.in_(committee_ids),
+                    PermitApplication.committee_id.is_(None)  # Department-only reviews
+                )
+            )
+        )
+
+    # Execute the query
+    result = await db.execute(query)
     applications = result.all()
-    print("APPLICATIONS ARE", applications)
 
-
+    # Process applications into queue data
     queue_data = []
     for app in applications:
-        print("Standard Duration:", app.standard_duration_days)
-        # Handle cases where submitted_at is None
-        if app.submitted_at is None:
-            days_in_queue = 0  # or some default value
-            submitted_date = now  # or some default date
-        else:
-            days_in_queue = (now - app.submitted_at).days
-            submitted_date = app.created_at
+        # Calculate days in queue
+        submitted_date = app.submitted_at or app.created_at
+        days_in_queue = (now - submitted_date).days
+        standard_duration = app.standard_duration_days or 30  # Default 30 days if not set
 
-        standard_duration = app.standard_duration_days
-        
-        # Calculate priority - modified to handle cases with no submission date
-        if app.submitted_at is None:
-            priority = "medium"  # default priority for applications without submission date
-        elif (app.status == ApplicationStatus.SUBMITTED and days_in_queue > 2):
+        # Determine priority
+        if app.status == ApplicationStatus.SUBMITTED and days_in_queue > 2:
             priority = "high"
         elif (app.status == ApplicationStatus.UNDER_REVIEW and 
               days_in_queue > (standard_duration / 2)):
@@ -268,19 +334,18 @@ async def get_reviewer_queue(request: Request, db: AsyncSession = Depends(aget_d
             "days_in_queue": days_in_queue,
             "priority": priority,
             "permit_id": app.id,
-            "has_submission_date": app.submitted_at is not None  # for debugging
+            "has_submission_date": submitted_date.isoformat(),
         })
-        
-    # Sort by priority (high first) and then by days in queue (most days first)
+
+    # Sort by priority (high first) and days in queue (descending)
     queue_data.sort(key=lambda x: (
         -1 if x["priority"] == "high" else 
         -0.5 if x["priority"] == "medium" else 0,
         -x["days_in_queue"]
     ))
 
-    print("QUEUE IS", queue_data)
+    return queue_data[:100]  # Return top 100 by default
 
-    return queue_data[:10]  # Return top 10 priority applications
 
 @router.get("/dashboard/inspection-stats")
 async def get_inspection_stats(request: Request, db: AsyncSession = Depends(aget_db)):

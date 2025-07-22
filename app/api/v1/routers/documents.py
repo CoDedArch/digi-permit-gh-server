@@ -2,7 +2,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Request
 from geoalchemy2 import WKBElement, WKTElement
 from requests import session
-from sqlalchemy import exists, func
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -16,7 +16,7 @@ from app.models.document import ApplicationDocument, PermitTypeModel, PermitDocu
 from geoalchemy2.shape import to_shape
 from shapely.geometry import mapping
 from app.models.inspection import Inspection
-from app.models.user import MMDA, Department, DepartmentStaff
+from app.models.user import MMDA, CommitteeMember, Department, DepartmentStaff
 from app.models.zoning import DrainageType, PreviousLandUse, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
 from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, PreviousLandUseOut, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
 from app.schemas.permit_application import ApplicationDetailOut, ApplicationOut, ApplicationUpdate
@@ -208,7 +208,12 @@ async def get_dashboard_data(request: Request, db: AsyncSession = Depends(aget_d
 
 
 @router.get("/dashboard/reviewer-map")
-async def get_reviewer_dashboard_data(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_reviewer_map_data(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db)
+):
+    """Get map data for reviewer dashboard, filtered by department and committee assignments"""
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -216,107 +221,192 @@ async def get_reviewer_dashboard_data(request: Request, db: AsyncSession = Depen
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-        
-        # Get the reviewer's department and MMDA info
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-        
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-        
-        mmda_id = staff.department.mmda_id
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # Fetch all permits for the reviewer's MMDA (work jurisdiction)
-    mmda_permits_result = await db.execute(
-        select(PermitApplication)
-        .options(
-            joinedload(PermitApplication.mmda),
-            joinedload(PermitApplication.permit_type)
-        )
-        .filter(PermitApplication.mmda_id == mmda_id)
-    )
-    mmda_permits = mmda_permits_result.scalars().all()
+    # Get reviewer's department and committee assignments
+    staff = await get_staff_with_assignments(db, user_id)
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
 
-    # Fetch any personal permits the reviewer has applied for (in any MMDA)
-    personal_permits_result = await db.execute(
-        select(PermitApplication)
-        .options(
-            joinedload(PermitApplication.mmda),
-            joinedload(PermitApplication.permit_type)
-        )
-        .filter(PermitApplication.applicant_id == user_id)
-        .filter(PermitApplication.mmda_id != mmda_id)  # Exclude those already in work MMDA
-    )
-    personal_permits = personal_permits_result.scalars().all()
+    mmda_id = staff.department.mmda_id
 
-    print("PERSONAL PERMITS IS", personal_permits)
+    # Build base filter for applications this reviewer should see
+    base_filter = build_reviewer_filter(staff, mmda_id)
 
-    # Get IDs of personal permits for efficient checking
+    # Fetch relevant permits
+    work_permits = await fetch_work_permits(db, base_filter)
+    personal_permits = await fetch_personal_permits(db, user_id, mmda_id)
     
+    # Process and combine results
+    all_permits = work_permits + personal_permits
     personal_permit_ids = {p.id for p in personal_permits}
-    
-    # Combine both permit lists
-    all_permits = mmda_permits + personal_permits
-
-    # Get all unique MMDAs involved (work MMDA + any personal permit MMDAs)
     mmda_ids = {mmda_id} | {p.mmda_id for p in personal_permits}
+    
+    # Get MMDA data with statistics
+    mmdas_data = await process_mmda_data(db, mmda_ids, staff, mmda_id)
 
-    # Fetch all relevant MMDAs and their permit stats
+    # Debug logging (keep your existing print statements)
+    debug_reviewer_data(base_filter, staff, work_permits, all_permits)
+
+    return format_reviewer_response(all_permits, personal_permit_ids, mmdas_data)
+
+# Helper functions (kept minimal to match your style)
+async def get_staff_with_assignments(db: AsyncSession, user_id: int):
+    """Get staff member with department and committee assignments"""
+    result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            joinedload(DepartmentStaff.department).joinedload(Department.mmda),
+            joinedload(DepartmentStaff.committee_memberships).joinedload(CommitteeMember.committee)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    return result.scalars().first()
+
+def build_reviewer_filter(staff: DepartmentStaff, mmda_id: int):
+    """Build filter for applications this reviewer should see"""
+    base_filter = and_(
+        PermitApplication.mmda_id == mmda_id,
+        PermitApplication.department_id == staff.department_id
+    )
+
+    if not staff.is_head:
+        committee_ids = [cm.committee.id for cm in staff.committee_memberships]
+        base_filter = and_(
+            base_filter,
+            or_(
+                PermitApplication.committee_id.in_(committee_ids),
+                PermitApplication.committee_id.is_(None)
+            )
+        )
+    return base_filter
+
+async def fetch_work_permits(db: AsyncSession, base_filter):
+    """Fetch work permits based on filter"""
+    result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.permit_type),
+            joinedload(PermitApplication.department),
+            joinedload(PermitApplication.committee)
+        )
+        .where(base_filter)
+    )
+    return result.scalars().all()
+
+async def fetch_personal_permits(db: AsyncSession, user_id: int, mmda_id: int):
+    """Fetch personal permits in other MMDAs"""
+    result = await db.execute(
+        select(PermitApplication)
+        .options(
+            joinedload(PermitApplication.mmda),
+            joinedload(PermitApplication.permit_type)
+        )
+        .where(
+            PermitApplication.applicant_id == user_id,
+            PermitApplication.mmda_id != mmda_id
+        )
+    )
+    return result.scalars().all()
+
+async def process_mmda_data(db: AsyncSession, mmda_ids: set, staff: DepartmentStaff, work_mmda_id: int):
+    """Process MMDA data with statistics"""
     mmdas_data = []
     for current_mmda_id in mmda_ids:
-        mmda_result = await db.execute(
-            select(MMDA)
-            .options(selectinload(MMDA.permit_applications))
-            .filter(MMDA.id == current_mmda_id)
-        )
-        mmda = mmda_result.scalars().first()
-
+        mmda = await fetch_mmda(db, current_mmda_id)
         if mmda:
-            # Calculate status counts for this MMDA
-            status_counts = {
-                "submitted": 0,
-                "under_review": 0,
-                "approved": 0,
-                "rejected": 0
-            }
-            for permit in mmda.permit_applications:
-                status = permit.status.value if hasattr(permit.status, "value") else permit.status
-                if status in status_counts:
-                    status_counts[status] += 1
+            status_counts = await get_mmda_status_counts(
+                db, current_mmda_id, staff, work_mmda_id
+            )
+            mmdas_data.append(format_mmda_data(mmda, status_counts))
+    return mmdas_data
 
-            mmdas_data.append({
-                "id": mmda.id,
-                "name": mmda.name,
-                "region": mmda.region,
-                "type": mmda.type,
-                "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
-                "status_counts": status_counts,
-            })
+async def fetch_mmda(db: AsyncSession, mmda_id: int):
+    """Fetch single MMDA"""
+    result = await db.execute(
+        select(MMDA)
+        .options(selectinload(MMDA.permit_applications))
+        .where(MMDA.id == mmda_id)
+    )
+    return result.scalars().first()
 
+async def get_mmda_status_counts(db: AsyncSession, mmda_id: int, staff: DepartmentStaff, work_mmda_id: int):
+    """Get status counts for MMDA permits"""
+    status_filter = and_(
+        PermitApplication.mmda_id == mmda_id,
+        PermitApplication.department_id == staff.department_id if mmda_id == work_mmda_id else True
+    )
+    
+    status_counts_result = await db.execute(
+        select(
+            PermitApplication.status,
+            func.count(PermitApplication.id)
+        )
+        .where(status_filter)
+        .group_by(PermitApplication.status)
+    )
+    
+    status_counts = {
+        "submitted": 0,
+        "under_review": 0,
+        "approved": 0,
+        "rejected": 0
+    }
+    
+    for status, count in status_counts_result:
+        status_key = status.value if hasattr(status, "value") else status
+        if status_key in status_counts:
+            status_counts[status_key] = count
+    
+    return status_counts
+
+def format_mmda_data(mmda: MMDA, status_counts: dict):
+    """Format MMDA data for response"""
+    return {
+        "id": mmda.id,
+        "name": mmda.name,
+        "region": mmda.region,
+        "type": mmda.type,
+        "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
+        "status_counts": status_counts,
+    }
+
+def format_reviewer_response(permits: list, personal_permit_ids: set, mmdas_data: list):
+    """Format final response"""
     return {
         "permits": [
             {
                 "id": p.id,
                 "project_name": p.project_name,
                 "status": p.status.value if hasattr(p.status, "value") else p.status,
-                "permit_type": {"id": p.permit_type.id, "name": p.permit_type.name} if p.permit_type else None,
+                "permit_type": {
+                    "id": p.permit_type.id,
+                    "name": p.permit_type.name
+                } if p.permit_type else None,
                 "mmda_id": p.mmda_id,
                 "parcel_geometry": serialize_geom(p.parcel_geometry),
                 "latitude": p.latitude,
                 "longitude": p.longitude,
-                "is_personal": p.id in personal_permit_ids,  # Flag for personal permits
+                "is_personal": p.id in personal_permit_ids,
             }
-            for p in all_permits
+            for p in permits
         ],
         "mmdas": mmdas_data,
     }
+
+def debug_reviewer_data(base_filter, staff, work_permits, all_permits):
+    """Debug logging (keeping your existing print statements)"""
+    print("Base filter applied", base_filter)
+    print("Staff Committee Membership", [
+        {"committee_id": cm.committee_id, "role": cm.role} 
+        for cm in staff.committee_memberships
+    ])
+    print("SOMETHING PERMITS:", work_permits)
+    print("ALL PERMITS:", all_permits)
+
 
 
 @router.get("/dashboard/inspector-map")
@@ -518,6 +608,8 @@ async def get_inspector_dashboard_data(request: Request, db: AsyncSession = Depe
 
 @router.get("/dashboard/admin-map")
 async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(aget_db)):
+    """Get comprehensive dashboard data for admin users including permits, MMDAs, and departments"""
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -530,7 +622,10 @@ async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(a
         staff_result = await db.execute(
             select(DepartmentStaff)
             .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
+            .options(
+                joinedload(DepartmentStaff.department)
+                .joinedload(Department.mmda)
+            )
             .filter(DepartmentStaff.user_id == user_id)
         )
         staff = staff_result.scalars().first()
@@ -548,7 +643,8 @@ async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(a
         .options(
             joinedload(PermitApplication.mmda),
             joinedload(PermitApplication.permit_type),
-            joinedload(PermitApplication.applicant)
+            joinedload(PermitApplication.applicant),
+            joinedload(PermitApplication.department)
         )
         .filter(PermitApplication.mmda_id == mmda_id)
     )
@@ -608,7 +704,7 @@ async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(a
                 "status_counts": status_counts,
             })
 
-    # Fetch departments within the admin's MMDA
+    # Fetch departments within the admin's MMDA with accurate application counts
     departments_result = await db.execute(
         select(Department)
         .filter(Department.mmda_id == mmda_id)
@@ -627,7 +723,7 @@ async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(a
         # Count active applications for this department
         active_apps_result = await db.execute(
             select(func.count(PermitApplication.id))
-            .filter(PermitApplication.mmda_id == dept.mmda_id)
+            .filter(PermitApplication.department_id == dept.id)
             .filter(
                 PermitApplication.status.in_([
                     ApplicationStatus.SUBMITTED,
@@ -637,35 +733,62 @@ async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(a
         )
         active_apps = active_apps_result.scalar_one() or 0
 
+        # Count total applications for this department
+        total_apps_result = await db.execute(
+            select(func.count(PermitApplication.id))
+            .filter(PermitApplication.department_id == dept.id)
+        )
+        total_apps = total_apps_result.scalar_one() or 0
+
+        # Get status breakdown for this department
+        status_counts_result = await db.execute(
+            select(
+                PermitApplication.status,
+                func.count(PermitApplication.id)
+            )
+            .filter(PermitApplication.department_id == dept.id)
+            .group_by(PermitApplication.status)
+        )
+        status_counts = {
+            status.value if hasattr(status, "value") else status: count 
+            for status, count in status_counts_result
+        }
+
         departments_data.append({
             "id": dept.id,
             "name": dept.name,
+            "code": dept.code,
             "mmda_id": dept.mmda_id,
             "staff_count": staff_count,
             "active_applications": active_apps,
+            "total_applications": total_apps,
+            "status_counts": status_counts,
         })
 
     return {
         "permits": [
             {
                 "id": p.id,
+                "application_number": p.application_number,
                 "project_name": p.project_name,
                 "status": p.status.value if hasattr(p.status, "value") else p.status,
-                "permit_type": {"id": p.permit_type.id, "name": p.permit_type.name} if p.permit_type else None,
+                "permit_type": {
+                    "id": p.permit_type.id,
+                    "name": p.permit_type.name
+                } if p.permit_type else None,
                 "mmda_id": p.mmda_id,
                 "parcel_geometry": serialize_geom(p.parcel_geometry),
                 "latitude": p.latitude,
                 "longitude": p.longitude,
-                "is_personal": p.id in personal_permit_ids,  # Flag for personal permits
+                "is_personal": p.id in personal_permit_ids,
                 "applicant_name": f"{p.applicant.first_name} {p.applicant.last_name}" if p.applicant else "Unknown",
-                "department_id": None,
+                "department_id": p.department_id,
             }
             for p in all_permits
         ],
         "mmdas": mmdas_data,
         "departments": departments_data,
     }
-
 
 
 @router.get("/types", response_model=List[PermitTypeWithRequirements])

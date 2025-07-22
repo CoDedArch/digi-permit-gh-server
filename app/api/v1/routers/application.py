@@ -8,7 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from uuid import uuid4
 from app.api.v1.routers.documents import serialize_geom
-from app.core.constants import InspectionStatus, InspectionType, PaymentPurpose, PaymentStatus, ReviewOutcome, ReviewStatus
+from app.core.constants import PERMIT_TYPE_TO_COMMITTEE, PERMIT_TYPE_TO_DEPARTMENT, InspectionStatus, InspectionType, PaymentPurpose, PaymentStatus, PermitType, ReviewOutcome, ReviewStatus
 from app.core.database import aget_db
 from sqlalchemy.orm import joinedload
 from app.core.security import decode_jwt_token
@@ -20,7 +20,7 @@ from app.models.review import ApplicationReview, ApplicationReviewStep
 from app.models.zoning import SiteCondition
 from app.schemas.ReviewPermitSchemas import FlagStepRequest, ReviewerPermitApplicationOut, UpdateReviewStatusRequest
 from app.schemas.permit_application import PermitApplicationCreate
-from app.models.user import MMDA, Committee, CommitteeMember, ProfessionalInCharge, User
+from app.models.user import MMDA, Committee, CommitteeMember, Department, ProfessionalInCharge, User
 from app.services.geojson_to_ewkt import geojson_to_ewkt
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -31,7 +31,7 @@ async def create_application(
     request: Request,
     db: AsyncSession = Depends(aget_db)
 ):
-    print("request Received")
+    # Authentication and user validation
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -46,10 +46,48 @@ async def create_application(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    architect_id = None
+    # Get department and committee assignments
+    try:
+        permit_type = PermitType(data.permitTypeId)
+        department_code = PERMIT_TYPE_TO_DEPARTMENT.get(permit_type)
+        committee_name = PERMIT_TYPE_TO_COMMITTEE.get(permit_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid permit type")
 
-    print("Site conditions are: ", data.siteConditionIds)
+    # Get the department
+    department_result = await db.execute(
+        select(Department)
+        .where(
+            Department.mmda_id == int(data.mmdaId),
+            Department.code == department_code
+        )
+    )
+    department = department_result.scalar_one_or_none()
     
+    if not department:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {department_code} department found for MMDA"
+        )
+
+    # Get the committee
+    committee_result = await db.execute(
+        select(Committee)
+        .where(
+            Committee.mmda_id == int(data.mmdaId),
+            Committee.name == committee_name
+        )
+    )
+    committee = committee_result.scalar_one_or_none()
+    
+    if not committee:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {committee_name} committee found for MMDA"
+        )
+
+    # Handle architect/professional
+    architect_id = None
     if data.architect and (data.architect.full_name or data.architect.license_number):
         new_professional = ProfessionalInCharge(
             full_name=data.architect.full_name,
@@ -60,25 +98,23 @@ async def create_application(
             role=data.architect.role or "architect",
         )
         db.add(new_professional)
-        await db.flush()  # Get the ID before commit
+        await db.flush()
         architect_id = new_professional.id
     else:
-        result = await db.execute(
-            select(ProfessionalInCharge.id).where(
-            ProfessionalInCharge.email == user.email
-            )
+        existing_prof = await db.execute(
+            select(ProfessionalInCharge.id)
+            .where(ProfessionalInCharge.email == user.email)
         )
-        existing_prof = result.scalars().first()
-        if existing_prof:
-            architect_id = existing_prof
+        architect_id = existing_prof.scalar_one_or_none()
 
+    # Handle site conditions
     site_conditions = []
     if data.siteConditionIds:
-        result = await db.execute(
-            select(SiteCondition).where(SiteCondition.id.in_(data.siteConditionIds))
+        site_conditions_result = await db.execute(
+            select(SiteCondition)
+            .where(SiteCondition.id.in_(data.siteConditionIds))
         )
-        site_conditions = result.scalars().all()
-
+        site_conditions = site_conditions_result.scalars().all()
 
     # Create new application
     application = PermitApplication(
@@ -97,11 +133,7 @@ async def create_application(
         expected_start_date=data.expected_start_date,
         expected_end_date=data.expected_end_date,
         drainage_type_id=int(data.drainageTypeId) if data.drainageTypeId else None,
-        previous_land_use_id = (
-            data.previousLandUseId
-            if data.previousLandUseId and data.previousLandUseId != "none"
-            else None
-        ),
+        previous_land_use_id=data.previousLandUseId if data.previousLandUseId and data.previousLandUseId != "none" else None,
         submitted_at=datetime.utcnow(),
         latitude=data.latitude,
         longitude=data.longitude,
@@ -125,17 +157,19 @@ async def create_application(
         },
         site_conditions=site_conditions,
         gis_metadata={entry["key"]: entry["value"] for entry in data.gisMetadata or []},
-        fire_safety_plan=data.fireSafetyPlan,                # ✅ NEW
-        waste_management_plan=data.wasteManagementPlan, 
+        fire_safety_plan=data.fireSafetyPlan,
+        waste_management_plan=data.wasteManagementPlan,
         status=ApplicationStatus.SUBMITTED,
         application_number=f"APP-{uuid4().hex[:6].upper()}",
+        department_id=department.id,
+        committee_id=committee.id,
     )
     db.add(application)
     await db.commit()
     await db.refresh(application)
 
-    # 🔗 Link any successful unlinked payment
-    result = await db.execute(
+    # Link any successful unlinked payment
+    payment_result = await db.execute(
         select(Payment)
         .where(
             Payment.user_id == user_id,
@@ -143,30 +177,34 @@ async def create_application(
             Payment.status == PaymentStatus.COMPLETED,
             Payment.application_id.is_(None)
         )
-        .order_by(Payment.payment_date.desc())  # get the most recent one
+        .order_by(Payment.payment_date.desc())
         .limit(1)
     )
-    payment = result.scalar_one_or_none()
+    payment = payment_result.scalar_one_or_none()
 
     if payment:
         payment.application_id = application.id
         db.add(payment)
         await db.commit()
 
-
     # Store documents
-    for doc_type_id, upload in data.documentUploads.items():
-        document = ApplicationDocument(
-            application_id=application.id,
-            document_type_id=int(doc_type_id),
-            file_path=upload.file_url,  # ✅ Match column name
-            uploaded_by_id=user_id,     # ✅ Match correct foreign key
-        )
-        db.add(document)
+    if data.documentUploads:
+        for doc_type_id, upload in data.documentUploads.items():
+            document = ApplicationDocument(
+                application_id=application.id,
+                document_type_id=int(doc_type_id),
+                file_path=upload.file_url,
+                uploaded_by_id=user_id,
+            )
+            db.add(document)
+        await db.commit()
 
-
+   
     await db.commit()
-    return {"id": application.id}
+
+    return {
+        "id": application.id,
+    }
 
 
 @router.get("/reviewer/permit/{application_id}", response_model=ReviewerPermitApplicationOut)

@@ -144,7 +144,6 @@ async def onboard_staff(
         if staff_record.department.mmda_id != payload.mmda_id:
             await db.delete(staff_record)
 
-
     # Ensure department belongs to the provided MMDA
     department = await db.get(Department, payload.department_id)
     if not department or department.mmda_id != payload.mmda_id:
@@ -169,13 +168,15 @@ async def onboard_staff(
     else:
         dept_staff.position = payload.designation or dept_staff.position
 
+    await db.flush()  # Ensure we have dept_staff.id for committee assignment
+
     # --- Step 5: Reassign Committees if needed ---
     # Remove committee memberships from other MMDAs
     existing_committees = await db.execute(
         select(CommitteeMember)
         .join(Committee)
         .options(joinedload(CommitteeMember.committee))
-        .filter(CommitteeMember.user_id == user.id)
+        .filter(CommitteeMember.staff_id == dept_staff.id)  # Changed to filter by staff_id
     )
     for committee_member in existing_committees.scalars():
         if committee_member.committee.mmda_id != payload.mmda_id:
@@ -189,7 +190,7 @@ async def onboard_staff(
     # Create or update CommitteeMember
     result = await db.execute(
         select(CommitteeMember).where(
-            CommitteeMember.user_id == user.id,
+            CommitteeMember.staff_id == dept_staff.id,  # Changed to use staff_id
             CommitteeMember.committee_id == payload.committee_id
         )
     )
@@ -198,7 +199,7 @@ async def onboard_staff(
     if not committee_member:
         committee_member = CommitteeMember(
             committee_id=payload.committee_id,
-            user_id=user.id,
+            staff_id=dept_staff.id,  # Using staff_id instead of user_id
             role=payload.role.replace("_", " ").title()
         )
         db.add(committee_member)
