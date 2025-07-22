@@ -180,6 +180,7 @@ class DepartmentStaff(Base, TimestampMixin):
     # Relationships
     department = relationship("Department", back_populates="staff")
     user = relationship("User")
+    committee_memberships = relationship("CommitteeMember", back_populates="staff")
     
     def __repr__(self):
         return f"<DepartmentStaff {self.user_id} in {self.department_id}>"
@@ -207,15 +208,15 @@ class CommitteeMember(Base, TimestampMixin):
     
     id = Column(Integer, primary_key=True)
     committee_id = Column(Integer, ForeignKey('committees.id'), nullable=False)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    staff_id = Column(Integer, ForeignKey('department_staff.id'), nullable=False)
     role = Column(String(50))  # e.g., "Chairperson"
     
     # Relationships
     committee = relationship("Committee", back_populates="members")
-    user = relationship("User")
+    staff = relationship("DepartmentStaff", back_populates="committee_memberships")
     
     def __repr__(self):
-        return f"<CommitteeMember {self.user_id} in {self.committee_id}>"
+        return f"<CommitteeMember staff_id={self.staff_id} in committee_id={self.committee_id}>"
 
 
 class CommitteeReview(Base, TimestampMixin):
@@ -224,6 +225,7 @@ class CommitteeReview(Base, TimestampMixin):
     id = Column(Integer, primary_key=True)
     committee_id = Column(Integer, ForeignKey('committees.id'))
     application_id = Column(Integer, ForeignKey('permit_applications.id'))
+    
     status = Column(Enum(ReviewStatus))
     comments = Column(Text)
     decision_date = Column(DateTime)
