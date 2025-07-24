@@ -2,7 +2,7 @@ from datetime import datetime, time, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, distinct, func, or_, select
 from sqlalchemy.orm import joinedload
 from app.core.constants import ApplicationStatus, InspectionStatus, ReviewStatus
 from app.core.database import aget_db
@@ -348,7 +348,12 @@ async def get_reviewer_queue(
 
 
 @router.get("/dashboard/inspection-stats")
-async def get_inspection_stats(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_inspection_stats(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db)
+):
+    """Get statistics for inspector dashboard, filtered by department assignments"""
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -356,128 +361,167 @@ async def get_inspection_stats(request: Request, db: AsyncSession = Depends(aget
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-
-        # Get the inspector's MMDA info
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-
-        mmda_id = staff.department.mmda_id
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Get inspector's department and MMDA info
+    staff_result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            joinedload(DepartmentStaff.department)
+            .joinedload(Department.mmda)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    staff = staff_result.scalars().first()
+    
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
+
+    mmda_id = staff.department.mmda_id
     now = datetime.now()
     today_start = datetime.combine(now.date(), time.min)
     today_end = datetime.combine(now.date(), time.max)
     thirty_days_ago = now - timedelta(days=30)
 
-    # 1. Scheduled Today (assigned to this officer)
+    # Base filter for inspections this inspector should see (assigned to them)
+    base_filter = and_(
+        Inspection.mmda_id == mmda_id,
+        Inspection.inspection_officer_id == user_id
+    )
+
+    # 1. Scheduled Today - include inspections with no officer assigned or assigned to current user
     scheduled_today_result = await db.execute(
         select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.scheduled_date.between(today_start, today_end))
-        .filter(Inspection.status == InspectionStatus.SCHEDULED)
+        .where(
+            Inspection.mmda_id == mmda_id,
+            or_(
+                Inspection.inspection_officer_id == user_id,
+                Inspection.inspection_officer_id.is_(None)
+            ),
+            Inspection.scheduled_date.between(today_start, today_end),
+            Inspection.status == InspectionStatus.SCHEDULED
+        )
     )
     scheduled_today = scheduled_today_result.scalar_one() or 0
 
-    # 2. Pending Reports (inspections done but report not submitted)
-    pending_reports_result = await db.execute(
+    # 2. Overdue Inspections - include inspections with no officer assigned or assigned to current user
+    overdue_result = await db.execute(
         select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.actual_date.isnot(None))
-        .filter(Inspection.status == InspectionStatus.COMPLETED)
-        .filter(Inspection.findings.is_(None))  # No findings means report not submitted
+        .where(
+            Inspection.mmda_id == mmda_id,
+            or_(
+                Inspection.inspection_officer_id == user_id,
+                Inspection.inspection_officer_id.is_(None)
+            ),
+            Inspection.scheduled_date < now,
+            Inspection.status.in_([
+                InspectionStatus.SCHEDULED,
+                InspectionStatus.PENDING
+            ])
+        )
     )
-    pending_reports = pending_reports_result.scalar_one() or 0
+    overdue = overdue_result.scalar_one() or 0
 
-    # 3. Violations Found (in this MMDA, last 30 days)
-    violations_result = await db.execute(
+    # 3. Completed Today
+    completed_today_result = await db.execute(
         select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.actual_date >= thirty_days_ago)
-        .filter(Inspection.violations_found.isnot(None))
+        .where(
+            base_filter,
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date.between(today_start, today_end)
+        )
     )
-    violations_found = violations_result.scalar_one() or 0
+    completed_today = completed_today_result.scalar_one() or 0
 
-    # 4. Inspections In Progress
-    in_progress_result = await db.execute(
+    # 4. Inspector's Completed Today (same as above since base_filter already includes officer check)
+    completed_today_inspector_result = await db.execute(
         select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.status == InspectionStatus.IN_PROGRESS)
+        .where(
+            base_filter,
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date.between(today_start, today_end)
+        )
     )
-    in_progress = in_progress_result.scalar_one() or 0
+    completed_today_inspector = completed_today_inspector_result.scalar_one() or 0
 
-    # 5. Completed This Week
-    week_start = now - timedelta(days=now.weekday())
-    completed_week_result = await db.execute(
-        select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.status == InspectionStatus.COMPLETED)
-        .filter(Inspection.actual_date >= week_start)
-    )
-    completed_week = completed_week_result.scalar_one() or 0
-
-    # 6. Average Inspection Duration (last 30 days)
+    # 5. Average Inspection Duration (last 30 days)
     avg_duration_result = await db.execute(
         select(
             func.avg(
                 func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 3600  # in hours
             )
         )
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.status == InspectionStatus.COMPLETED)
-        .filter(Inspection.actual_date >= thirty_days_ago)
-        .filter(Inspection.scheduled_date.isnot(None))
+        .where(
+            base_filter,
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date >= thirty_days_ago,
+            Inspection.scheduled_date.isnot(None)
+        )
     )
     avg_duration_hours = round(avg_duration_result.scalar_one() or 0, 1)
 
-    # 7. Reinspection Rate
-    reinspection_result = await db.execute(
-        select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.is_reinspection == True)
-        .filter(Inspection.actual_date >= thirty_days_ago)
+    # 6. Inspector's Average Duration (last 30 days)
+    avg_inspector_duration_result = await db.execute(
+        select(
+            func.avg(
+                func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 3600
+            )
+        )
+        .where(
+            base_filter,
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date >= thirty_days_ago,
+            Inspection.scheduled_date.isnot(None)
+        )
     )
-    reinspections = reinspection_result.scalar_one() or 0
+    avg_inspector_duration_hours = round(avg_inspector_duration_result.scalar_one() or 0, 1)
 
-    total_inspections_result = await db.execute(
+    # 7. Violations Found (last 30 days)
+    violations_result = await db.execute(
         select(func.count(Inspection.id))
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.actual_date >= thirty_days_ago)
+        .where(
+            base_filter,
+            Inspection.actual_date >= thirty_days_ago,
+            Inspection.violations_found.isnot(None)
+        )
     )
-    total_inspections = total_inspections_result.scalar_one() or 1  # Avoid division by zero
+    violations_found = violations_result.scalar_one() or 0
 
-    reinspection_rate = round((reinspections / total_inspections) * 100, 1)
+    # 8. Inspector's Violations Found (last 30 days)
+    inspector_violations_result = await db.execute(
+        select(func.count(Inspection.id))
+        .where(
+            base_filter,
+            Inspection.actual_date >= thirty_days_ago,
+            Inspection.violations_found.isnot(None)
+        )
+    )
+    inspector_violations = inspector_violations_result.scalar_one() or 0
 
     return {
         "scheduled_today": scheduled_today,
-        "pending_reports": pending_reports,
-        "violations_found": violations_found,
-        "in_progress": in_progress,
-        "completed_week": completed_week,
+        "overdue": overdue,
+        "completed_today": completed_today,
+        "completed_today_inspector": completed_today_inspector,
         "avg_duration_hours": avg_duration_hours,
-        "reinspection_rate": reinspection_rate,
-        "total_inspections": total_inspections,
+        "avg_inspector_duration_hours": avg_inspector_duration_hours,
+        "violations_found": violations_found,
+        "inspector_violations": inspector_violations,
+        # "department": staff.department.name,
+        # "is_department_head": staff.is_head
     }
 
 
 @router.get("/inspections/dashboard/inspector-queue")
-async def get_inspector_queue(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_inspector_queue(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db),
+    status: Optional[InspectionStatus] = None
+):
+    """Get inspections in the inspector's queue, filtered by their department assignments"""
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -485,56 +529,70 @@ async def get_inspector_queue(request: Request, db: AsyncSession = Depends(aget_
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-        
-        # Get the inspector's department and MMDA info
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .join(Department)
-            .options(joinedload(DepartmentStaff.department).joinedload(Department.mmda))
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-        
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-        
-        mmda_id = staff.department.mmda_id
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Get inspector's department and MMDA info
+    staff_result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            joinedload(DepartmentStaff.department)
+            .joinedload(Department.mmda)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    staff = staff_result.scalars().first()
+    
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
+
+    mmda_id = staff.department.mmda_id
 
     # Get current date and time
     now = datetime.now()
-    today_start = datetime.combine(now.date(), time.min)
-    today_end = datetime.combine(now.date(), time.max)
 
-    # Fetch inspections assigned to this officer
-    result = await db.execute(
+    # Base query with all necessary joins
+    query = (
         select(
             Inspection.id,
-            PermitApplication.application_number.label("permit_no"),
-            PermitApplication.project_address.label("address"),
+            PermitApplication.application_number,
             PermitTypeModel.name.label("permit_type"),
             User.first_name,
             User.last_name,
+            PermitApplication.project_address,
             Inspection.scheduled_date,
             Inspection.status,
-            Inspection.inspection_type
+            Inspection.inspection_type,
+            Inspection.created_at,
+            Department.name.label("department_name")
         )
         .join(PermitApplication, Inspection.application_id == PermitApplication.id)
         .join(PermitTypeModel, PermitApplication.permit_type_id == PermitTypeModel.id)
         .join(User, PermitApplication.applicant_id == User.id)
-        .filter(Inspection.mmda_id == mmda_id)
-        .filter(Inspection.inspection_officer_id == user_id)
-        .filter(Inspection.status.in_([
-            InspectionStatus.SCHEDULED,
-            InspectionStatus.IN_PROGRESS,
-            InspectionStatus.PENDING
-        ]))
-        .order_by(Inspection.scheduled_date.asc())
+        .join(Department, PermitApplication.department_id == Department.id)
+        .where(Inspection.mmda_id == mmda_id)
+        .where(Inspection.inspection_officer_id == user_id)
     )
 
+    # Filter by status if provided
+    if status:
+        query = query.where(Inspection.status == status)
+    else:
+        # Default to active inspections
+        query = query.where(
+            or_(
+                Inspection.status == InspectionStatus.SCHEDULED,
+                Inspection.status == InspectionStatus.IN_PROGRESS,
+                Inspection.status == InspectionStatus.PENDING
+            )
+        )
+
+    # Execute the query
+    result = await db.execute(query)
     inspections = result.all()
 
+    # Process inspections into queue data
     queue_data = []
     for insp in inspections:
         # Calculate days until due (negative if overdue)
@@ -555,30 +613,32 @@ async def get_inspector_queue(request: Request, db: AsyncSession = Depends(aget_
         else:  # Pending
             priority = "low"
 
-        # Format scheduled time if available
-        scheduled_time = insp.scheduled_date.strftime("%I:%M %p") if insp.scheduled_date else "Not scheduled"
+        # Calculate days waiting (for pending inspections)
+        days_waiting = (now - insp.created_at).days if insp.created_at else 0
 
         queue_data.append({
             "id": insp.id,
-            "permit_no": insp.permit_no,
-            "address": insp.address,
+            "permit_no": insp.application_number,
+            "address": insp.project_address,
             "type": insp.permit_type,
-            "scheduled_time": scheduled_time,
+            "scheduled_date": insp.scheduled_date.isoformat() if insp.scheduled_date else None,
             "status": insp.status.value,
             "days_until_due": days_until_due,
+            "days_waiting": days_waiting,
             "priority": priority,
             "applicant": f"{insp.first_name} {insp.last_name}",
-            "inspection_type": insp.inspection_type.value if insp.inspection_type else None
-        })
-        
-    # Sort by priority (high first) and then by days until due (closest first)
+            "inspection_type": insp.inspection_type.value if insp.inspection_type else None,
+            })
+
+    # Sort by priority (high first), then by days until due (ascending), then by days waiting (descending)
     queue_data.sort(key=lambda x: (
         -1 if x["priority"] == "high" else 
         -0.5 if x["priority"] == "medium" else 0,
-        x["days_until_due"]
+        x["days_until_due"],
+        -x["days_waiting"]
     ))
 
-    return queue_data[:10]  # Return top 10 priority inspections
+    return queue_data[:100]  # Return top 100 by default
 
 
 # Admin Dashboard Endpoints
@@ -725,15 +785,20 @@ async def get_admin_stats(request: Request, db: AsyncSession = Depends(aget_db))
             status_distribution[status_key] = count
 
     # 8. Department Performance
+    # 8. Department Performance (Fixed)
     department_performance_result = await db.execute(
         select(
             Department.name,
-            func.count(PermitApplication.id).label("completed_count"),
+            func.count(distinct(PermitApplication.id)).label("completed_count"),
             func.avg(
                 func.extract('epoch', PermitApplication.updated_at - PermitApplication.submitted_at) / 86400
             ).label("avg_time")
         )
-        .join(PermitApplication, PermitApplication.mmda_id == Department.mmda_id, isouter=True)
+        .select_from(Department)
+        # Join through ApplicationReview to get the reviewing department
+        .join(DepartmentStaff, DepartmentStaff.department_id == Department.id, isouter=True)
+        .join(ApplicationReview, ApplicationReview.review_officer_id == DepartmentStaff.user_id, isouter=True)
+        .join(PermitApplication, PermitApplication.id == ApplicationReview.application_id, isouter=True)
         .filter(Department.mmda_id == mmda_id)
         .filter(
             or_(
@@ -741,7 +806,7 @@ async def get_admin_stats(request: Request, db: AsyncSession = Depends(aget_db))
                     ApplicationStatus.APPROVED,
                     ApplicationStatus.REJECTED
                 ]),
-                PermitApplication.id.is_(None)
+                PermitApplication.id.is_(None)  # Include departments with no completed applications
             )
         )
         .group_by(Department.id, Department.name)
@@ -853,7 +918,7 @@ async def get_recent_activities(request: Request, db: AsyncSession = Depends(age
         activities.append({
             "id": len(activities) + 1,
             "user_name": f"{first_name} {last_name}",
-            "action": f"Reviewed application for {project_name} - {status.replace('_', ' ').title()}",
+            "action": f"Reviewed application for {project_name} - {status.value.replace('_', ' ').title()}",
             "time_ago": time_ago,
             "activity_type": "user_action"
         })
@@ -885,7 +950,7 @@ async def get_recent_activities(request: Request, db: AsyncSession = Depends(age
         activities.append({
             "id": len(activities) + 1,
             "user_name": "System",
-            "action": f"Application for {project_name} by {first_name} {last_name} - {status.replace('_', ' ').title()}",
+            "action": f"Application for {project_name} by {first_name} {last_name} - {status.value.replace('_', ' ').title()}",
             "time_ago": time_ago,
             "activity_type": "system_action"
         })

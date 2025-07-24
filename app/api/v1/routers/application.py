@@ -20,7 +20,7 @@ from app.models.review import ApplicationReview, ApplicationReviewStep
 from app.models.zoning import SiteCondition
 from app.schemas.ReviewPermitSchemas import FlagStepRequest, ReviewerPermitApplicationOut, UpdateReviewStatusRequest
 from app.schemas.permit_application import PermitApplicationCreate
-from app.models.user import MMDA, Committee, CommitteeMember, Department, ProfessionalInCharge, User
+from app.models.user import MMDA, Committee, CommitteeMember, Department, DepartmentStaff, ProfessionalInCharge, User
 from app.services.geojson_to_ewkt import geojson_to_ewkt
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -228,11 +228,12 @@ async def get_permit_application_for_reviewer(
 
     # 2. Get the MMDA the reviewer is assigned to via committee
     mmda_query = (
-        select(MMDA.id)
-        .join(Committee)
-        .join(CommitteeMember)
-        .where(CommitteeMember.user_id == reviewer_user_id)
-        .limit(1)
+    select(MMDA.id)
+    .join(Committee)
+    .join(CommitteeMember)
+    .join(DepartmentStaff)  # Add this join
+    .where(DepartmentStaff.user_id == reviewer_user_id)  # Change this condition
+    .limit(1)
     )
     mmda_result = await db.execute(mmda_query)
     mmda_id = mmda_result.scalar()
@@ -309,7 +310,8 @@ async def set_under_review(
         select(MMDA.id)
         .join(Committee)
         .join(CommitteeMember)
-        .where(CommitteeMember.user_id == reviewer_user_id)
+        .join(DepartmentStaff)  # Add this join
+        .where(DepartmentStaff.user_id == reviewer_user_id)  # Change this condition
         .limit(1)
     )
     mmda_result = await db.execute(mmda_query)
@@ -641,7 +643,8 @@ async def flag_step_exception(
         select(MMDA.id)
         .join(Committee)
         .join(CommitteeMember)
-        .where(CommitteeMember.user_id == reviewer_user_id)
+        .join(DepartmentStaff)  # Add this join
+        .where(DepartmentStaff.user_id == reviewer_user_id)  # Change this condition
         .limit(1)
     )
     mmda_result = await db.execute(mmda_query)

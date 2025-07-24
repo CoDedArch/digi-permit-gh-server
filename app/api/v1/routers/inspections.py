@@ -1,16 +1,21 @@
+import traceback
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from datetime import datetime
 
+from app.core.constants import UserRole
 from app.core.database import aget_db
+from app.models.document import ApplicationDocument
 from app.models.inspection import Inspection, InspectionStatus, InspectionType
 from app.models.application import PermitApplication
-from app.models.user import User
+from app.models.user import MMDA, User
 from app.schemas.InspectionSchema import InspectionDetailOut, InspectionOut, InspectionRequest
-from app.core.security import decode_jwt_token  # make sure this function exists
+from app.core.security import decode_jwt_token
+from app.schemas.permit_application import ApplicationDocumentOut  # make sure this function exists
 
 router = APIRouter(
     prefix="/inspections",
@@ -119,24 +124,118 @@ async def get_user_inspections(
 @router.get("/{inspection_id}", response_model=InspectionDetailOut)
 async def get_inspection_detail(
     inspection_id: int,
+    request: Request,
     db: AsyncSession = Depends(aget_db),
 ):
+    # Verify authentication
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     try:
-        result = await db.execute(
-            select(Inspection)
-            .options(
-                joinedload(Inspection.application),
-                joinedload(Inspection.inspection_officer),
-                joinedload(Inspection.applicant),
-                joinedload(Inspection.mmda),
-            )
-            .where(Inspection.id == inspection_id)
-        )
+        # Decode token to verify user
+        payload = decode_jwt_token(token)
+        user_id = payload.get("sub")
+        user_role = payload.get("role")
+
+        # Get inspection with optimized query
+        stmt = (
+    select(Inspection)
+    .options(
+        selectinload(Inspection.application).load_only(
+            PermitApplication.id,
+            PermitApplication.application_number,
+            PermitApplication.project_name,
+            # PermitApplication.project_location,
+            PermitApplication.project_description,
+            PermitApplication.project_address,
+        ),
+        selectinload(Inspection.application).selectinload(PermitApplication.permit_type),
+        selectinload(Inspection.inspection_officer).load_only(
+            User.id,
+            User.first_name,
+            User.last_name,
+            User.phone,
+        ),
+        selectinload(Inspection.applicant).load_only(
+            User.id,
+            User.first_name,
+            User.last_name,
+            User.email,
+            User.phone,
+        ),
+        selectinload(Inspection.mmda).load_only(
+            MMDA.id,
+            MMDA.name,
+        ),
+    )
+    .where(Inspection.id == inspection_id)
+)
+
+
+        result = await db.execute(stmt)
         inspection = result.scalar_one_or_none()
 
         if not inspection:
             raise HTTPException(status_code=404, detail="Inspection not found")
 
-        return inspection  # FastAPI will automatically use your Pydantic model
+        # Return response using from_orm
+        return InspectionDetailOut.from_orm(inspection)
+
+    except HTTPException:
+        raise  # Re-raise known exceptions
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        traceback.print_exc()  # Log full traceback for debugging
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while fetching inspection details: {str(e)}"
+        )
+
+
+@router.get("/{inspection_id}/documents", response_model=List[ApplicationDocumentOut])
+async def get_inspection_documents(
+    inspection_id: int,
+    request: Request,
+    db: AsyncSession = Depends(aget_db)
+):
+    # Verify authentication
+    token = request.cookies.get("auth_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    payload = decode_jwt_token(token)
+    user_id = int(payload.get("sub"))
+
+    # 🔍 Get actual user role from DB
+    user_result = await db.execute(
+        select(User.role).where(User.id == user_id)
+    )
+    user_role = user_result.scalar_one_or_none()
+
+    if user_role != UserRole.INSPECTION_OFFICER:
+        raise HTTPException(
+            status_code=403,
+            detail="Only inspectors can access inspection documents"
+        )
+
+    # Get the inspection
+    inspection_result = await db.execute(
+        select(Inspection)
+        .where(Inspection.id == inspection_id)
+        .options(joinedload(Inspection.application))
+    )
+    inspection = inspection_result.scalar_one_or_none()
+
+    if not inspection:
+        raise HTTPException(status_code=404, detail="Inspection not found")
+
+    # Get documents for the application
+    docs_result = await db.execute(
+        select(ApplicationDocument)
+        .where(ApplicationDocument.application_id == inspection.application_id)
+        .options(selectinload(ApplicationDocument.document_type))
+        .order_by(ApplicationDocument.uploaded_at.desc())
+    )
+    documents = docs_result.scalars().all()
+
+    return [ApplicationDocumentOut.from_orm(doc) for doc in documents]

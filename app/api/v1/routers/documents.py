@@ -8,7 +8,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from sqlalchemy.orm import joinedload
-from app.core.constants import ApplicationStatus
+from app.core.constants import ApplicationStatus, InspectionStatus, UserRole
 from app.core.database import aget_db
 from app.core.security import decode_jwt_token
 from app.models.application import PermitApplication
@@ -19,7 +19,7 @@ from app.models.inspection import Inspection
 from app.models.user import MMDA, CommitteeMember, Department, DepartmentStaff
 from app.models.zoning import DrainageType, PreviousLandUse, SiteCondition, ZoningDistrict, ZoningPermittedUse, ZoningUseDocumentRequirement
 from app.schemas.PermitSchemas import DrainageTypeOut, PermitTypeOut, PermitTypeWithRequirements, PreviousLandUseOut, SiteConditionOut, ZoningDistrictOut, ZoningPermittedUseOut
-from app.schemas.permit_application import ApplicationDetailOut, ApplicationOut, ApplicationUpdate
+from app.schemas.permit_application import ApplicationDetailOut, ApplicationDocumentOut, ApplicationOut, ApplicationUpdate
 
 router = APIRouter(
     prefix="/permits",
@@ -72,6 +72,7 @@ async def get_user_applications(
 
     print("✅ Final serialized apps:", apps)
     return [ApplicationOut.from_orm(app) for app in apps]
+
 
 @router.get("/my-applications/{application_id}", response_model=ApplicationDetailOut)
 async def get_application(application_id: int, db: AsyncSession = Depends(aget_db)):
@@ -249,7 +250,7 @@ async def get_reviewer_map_data(
     # Debug logging (keep your existing print statements)
     debug_reviewer_data(base_filter, staff, work_permits, all_permits)
 
-    return format_reviewer_response(all_permits, personal_permit_ids, mmdas_data)
+    return format_reviewer_response(all_permits, personal_permit_ids, mmdas_data, mmda_id)
 
 # Helper functions (kept minimal to match your style)
 async def get_staff_with_assignments(db: AsyncSession, user_id: int):
@@ -374,8 +375,8 @@ def format_mmda_data(mmda: MMDA, status_counts: dict):
         "status_counts": status_counts,
     }
 
-def format_reviewer_response(permits: list, personal_permit_ids: set, mmdas_data: list):
-    """Format final response"""
+def format_reviewer_response(permits: list, personal_permit_ids: set, mmdas_data: list, reviewer_mmda_id: int):
+    """Format final response with reviewer's MMDA ID"""
     return {
         "permits": [
             {
@@ -395,6 +396,7 @@ def format_reviewer_response(permits: list, personal_permit_ids: set, mmdas_data
             for p in permits
         ],
         "mmdas": mmdas_data,
+        "reviewer_mmda_id": reviewer_mmda_id,  # Add reviewer's work MMDA ID
     }
 
 def debug_reviewer_data(base_filter, staff, work_permits, all_permits):
@@ -410,7 +412,15 @@ def debug_reviewer_data(base_filter, staff, work_permits, all_permits):
 
 
 @router.get("/dashboard/inspector-map")
-async def get_inspector_dashboard_data(request: Request, db: AsyncSession = Depends(aget_db)):
+async def get_inspector_map_data(
+    request: Request, 
+    db: AsyncSession = Depends(aget_db)
+):
+    """Get map data for inspector dashboard including:
+    - Inspector's personal applications (any MMDA)
+    - Applications ready for inspection in assigned MMDA
+    """
+    # Authentication
     token = request.cookies.get("auth_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -418,193 +428,256 @@ async def get_inspector_dashboard_data(request: Request, db: AsyncSession = Depe
     try:
         payload = decode_jwt_token(token)
         user_id = int(payload.get("sub"))
-
-        staff_result = await db.execute(
-            select(DepartmentStaff)
-            .options(
-                joinedload(DepartmentStaff.department).joinedload(Department.mmda)
-            )
-            .filter(DepartmentStaff.user_id == user_id)
-        )
-        staff = staff_result.scalars().first()
-
-        if not staff:
-            raise HTTPException(status_code=403, detail="User is not a staff member")
-
-        mmda_id = staff.department.mmda_id
-    except Exception:
+    except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    # Get inspector's department and MMDA info
+    staff = await get_inspector_staff_info(db, user_id)
+    if not staff:
+        raise HTTPException(status_code=403, detail="User is not a staff member")
+
+    mmda_id = staff.department.mmda_id
+
     try:
-        # Fetch applications in MMDA
-        mmda_applications_result = await db.execute(
-            select(PermitApplication)
-            .options(
-                joinedload(PermitApplication.permit_type),
-                joinedload(PermitApplication.mmda),
-                joinedload(PermitApplication.inspections)
-            )
-            .filter(PermitApplication.mmda_id == mmda_id)
-            .order_by(PermitApplication.id)
-        )
-        mmda_applications = mmda_applications_result.unique().scalars().all()
+        # Fetch applications in two categories:
+        # 1. Personal applications (any MMDA)
+        personal_applications = await fetch_personal_applications(db, user_id)
+        
+        # 2. Applications ready for inspection in assigned MMDA
+        inspection_ready_apps = await fetch_inspection_ready_apps(db, mmda_id, user_id)
 
-        # Fetch personal applications
-        personal_applications_result = await db.execute(
-            select(PermitApplication)
-            .options(
-                joinedload(PermitApplication.permit_type),
-                joinedload(PermitApplication.mmda),
-                joinedload(PermitApplication.inspections)
-            )
-            .filter(PermitApplication.applicant_id == user_id)
-            .order_by(PermitApplication.id)
-        )
-        personal_applications = personal_applications_result.unique().scalars().all()
-
-        # Merge, deduplicate
-        seen_ids = set()
-        all_applications = []
-        for app in mmda_applications + personal_applications:
-            if app.id not in seen_ids:
-                seen_ids.add(app.id)
-                all_applications.append(app)
-
+        # Combine and deduplicate
+        all_applications = await combine_inspection_data(inspection_ready_apps, personal_applications)
+        personal_permit_ids = {p.id for p in personal_applications}
         mmda_ids = {mmda_id} | {app.mmda_id for app in personal_applications}
+        
+        # Get MMDA data with statistics
+        mmdas_data = await process_inspection_mmda_data(db, mmda_ids, mmda_id)
 
-        STATUS_MAPPING = {
-            # Inspection
-            "pending": "pending",
-            "scheduled": "scheduled",
-            "in_progress": "in_progress",
-            "completed": "completed",
-            "cancelled": "cancelled",
-            "inspected": "completed",
-
-            # Application
-            "approved": "awaiting_inspection",
-            "under_review": "awaiting_inspection",
-            "inspection_pending": "awaiting_inspection",
-            "submitted": "pending",
-            "draft": "pending",
-            "additional_info_requested": "pending",
-            "rejected": "cancelled",
-            "cancelled": "cancelled",
-            "completed": "completed",
-            "issued": "completed",
-        }
-
-        mmdas_data = []
-
-        for current_mmda_id in mmda_ids:
-            mmda_result = await db.execute(select(MMDA).filter(MMDA.id == current_mmda_id))
-            mmda = mmda_result.scalars().first()
-
-            if not mmda:
-                continue
-
-            # Initial counts
-            status_counts = {
-                "pending": 0,
-                "scheduled": 0,
-                "in_progress": 0,
-                "completed": 0,
-                "cancelled": 0,
-                "awaiting_inspection": 0,
-            }
-
-            # 1. Count INSPECTIONS
-            inspection_stats = await db.execute(
-                select(Inspection.status, func.count(Inspection.id))
-                .join(PermitApplication, Inspection.application_id == PermitApplication.id)
-                .filter(PermitApplication.mmda_id == current_mmda_id)
-                .group_by(Inspection.status)
-            )
-            for status, count in inspection_stats.all():
-                raw = status.value if hasattr(status, "value") else status
-                mapped = STATUS_MAPPING.get(raw.lower(), "pending")
-                if mapped in status_counts:
-                    status_counts[mapped] += count
-
-            # 2. Count APPLICATIONS without inspections
-            app_status_stats = await db.execute(
-                select(PermitApplication.status, func.count(PermitApplication.id))
-                .filter(
-                    PermitApplication.mmda_id == current_mmda_id,
-                    ~exists().where(Inspection.application_id == PermitApplication.id)
-                )
-                .group_by(PermitApplication.status)
-            )
-            for app_status, count in app_status_stats.all():
-                raw = app_status.value if hasattr(app_status, "value") else app_status
-                mapped = STATUS_MAPPING.get(raw.lower(), "pending")
-                if mapped in status_counts:
-                    status_counts[mapped] += count
-
-            # # 3. Count applications that need inspection
-            # needs_inspection_count = await db.execute(
-            #     select(func.count(PermitApplication.id))
-            #     .filter(
-            #         PermitApplication.mmda_id == current_mmda_id,
-            #         PermitApplication.status.in_([
-            #             ApplicationStatus.APPROVED,
-            #             ApplicationStatus.UNDER_REVIEW
-            #         ]),
-            #         ~exists().where(Inspection.application_id == PermitApplication.id)
-            #     )
-            # )
-            # needs_inspection = needs_inspection_count.scalar() or 0
-            # status_counts["awaiting_inspection"] += needs_inspection
-
-            mmdas_data.append({
-                "id": mmda.id,
-                "name": mmda.name,
-                "region": mmda.region,
-                "type": mmda.type,
-                "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
-                "status_counts": status_counts,
-            })
-
-        return {
-            "permits": [
-                {
-                    "id": app.id,
-                    "project_name": app.project_name,
-                    "status": app.status.value if hasattr(app.status, "value") else app.status,
-                    "permit_type": {
-                        "id": app.permit_type.id,
-                        "name": app.permit_type.name
-                    } if app.permit_type else None,
-                    "mmda_id": app.mmda_id,
-                    "parcel_geometry": serialize_geom(app.parcel_geometry),
-                    "latitude": app.latitude,
-                    "longitude": app.longitude,
-                    "is_personal": app.applicant_id == user_id,
-                    "inspections": [
-                        {
-                            "id": insp.id,
-                            "status": insp.status.value if hasattr(insp.status, "value") else insp.status,
-                            "scheduled_date": insp.scheduled_date.isoformat() if insp.scheduled_date else None,
-                            "actual_date": insp.actual_date.isoformat() if insp.actual_date else None,
-                            "inspection_type": insp.inspection_type.value if insp.inspection_type else None
-                        }
-                        for insp in app.inspections
-                    ],
-                    "needs_inspection": (
-                        app.status in [ApplicationStatus.APPROVED, ApplicationStatus.UNDER_REVIEW]
-                        and len(app.inspections) == 0
-                    )
-                }
-                for app in all_applications
-            ],
-            "mmdas": mmdas_data,
-        }
+        return format_inspector_response(all_applications, personal_permit_ids, mmdas_data, mmda_id)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Error fetching dashboard data")
+        raise HTTPException(status_code=500, detail=str(e))
 
+async def get_inspector_staff_info(db: AsyncSession, user_id: int):
+    """Get inspector staff member with department info"""
+    result = await db.execute(
+        select(DepartmentStaff)
+        .join(Department)
+        .options(
+            selectinload(DepartmentStaff.department)
+            .selectinload(Department.mmda)
+        )
+        .where(DepartmentStaff.user_id == user_id)
+    )
+    return result.scalars().first()
+
+async def fetch_inspection_ready_apps(db: AsyncSession, mmda_id: int, user_id: int):
+    """Fetch applications ready for inspection in the specified MMDA"""
+    # First get applications that need inspection
+    needs_inspection = await db.execute(
+        select(PermitApplication)
+        .options(
+            selectinload(PermitApplication.permit_type),
+            selectinload(PermitApplication.mmda),
+            selectinload(PermitApplication.inspections)
+        )
+        .where(
+            PermitApplication.mmda_id == mmda_id,
+            PermitApplication.status.in_([
+                ApplicationStatus.APPROVED,
+                ApplicationStatus.UNDER_REVIEW
+            ]),
+            ~exists().where(Inspection.application_id == PermitApplication.id)
+        )
+    )
+    apps_needing_inspection = needs_inspection.scalars().all()
+
+    # Then get applications with pending inspections assigned to this inspector
+    pending_inspections = await db.execute(
+        select(PermitApplication)
+        .options(
+            selectinload(PermitApplication.permit_type),
+            selectinload(PermitApplication.mmda),
+            selectinload(PermitApplication.inspections)
+        )
+        .join(Inspection, Inspection.application_id == PermitApplication.id)
+        .where(
+            PermitApplication.mmda_id == mmda_id,
+            Inspection.inspection_officer_id == user_id,
+            Inspection.status == InspectionStatus.PENDING
+        )
+    )
+    apps_with_pending = pending_inspections.scalars().all()
+
+    # Combine and deduplicate
+    seen_ids = set()
+    combined = []
+    for app in apps_needing_inspection + apps_with_pending:
+        if app.id not in seen_ids:
+            seen_ids.add(app.id)
+            combined.append(app)
+    return combined
+
+async def fetch_personal_applications(db: AsyncSession, user_id: int):
+    """Fetch inspector's personal applications from any MMDA"""
+    result = await db.execute(
+        select(PermitApplication)
+        .options(
+            selectinload(PermitApplication.permit_type),
+            selectinload(PermitApplication.mmda),
+            selectinload(PermitApplication.inspections)
+        )
+        .where(PermitApplication.applicant_id == user_id)
+    )
+    return result.scalars().all()
+
+async def combine_inspection_data(inspection_ready_apps: list, personal_apps: list):
+    """Combine inspection and application data"""
+    seen_ids = set()
+    unique_apps = []
+    
+    for app in inspection_ready_apps + personal_apps:
+        if app.id not in seen_ids:
+            seen_ids.add(app.id)
+            unique_apps.append(app)
+    
+    return unique_apps
+
+async def process_inspection_mmda_data(db: AsyncSession, mmda_ids: set, work_mmda_id: int):
+    """Process MMDA data with inspection statistics"""
+    mmdas_data = []
+    for current_mmda_id in mmda_ids:
+        mmda = await fetch_mmda(db, current_mmda_id)
+        if mmda:
+            status_counts = await get_inspection_status_counts(
+                db, current_mmda_id, work_mmda_id
+            )
+            mmdas_data.append(format_mmda_data(mmda, status_counts))
+    return mmdas_data
+
+async def fetch_mmda(db: AsyncSession, mmda_id: int):
+    """Fetch single MMDA"""
+    result = await db.execute(
+        select(MMDA)
+        .where(MMDA.id == mmda_id)
+    )
+    return result.scalars().first()
+
+async def get_inspection_status_counts(db: AsyncSession, mmda_id: int, work_mmda_id: int):
+    """Get status counts for inspections in MMDA"""
+    # Initialize counts
+    status_counts = {
+        "pending": 0,
+        "scheduled": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "cancelled": 0,
+        "awaiting_inspection": 0
+    }
+    
+    # Map inspection statuses
+    STATUS_MAPPING = {
+        "pending": "pending",
+        "scheduled": "scheduled",
+        "in_progress": "in_progress",
+        "completed": "completed",
+        "cancelled": "cancelled",
+        "inspected": "completed",
+        "approved": "awaiting_inspection",
+        "under_review": "awaiting_inspection",
+        "inspection_pending": "awaiting_inspection",
+        "submitted": "pending",
+        "draft": "pending",
+        "additional_info_requested": "pending",
+        "rejected": "cancelled",
+        "issued": "completed",
+    }
+    
+    # Count inspections by status
+    inspection_stats = await db.execute(
+        select(Inspection.status, func.count(Inspection.id))
+        .join(PermitApplication, Inspection.application_id == PermitApplication.id)
+        .filter(PermitApplication.mmda_id == mmda_id)
+        .group_by(Inspection.status)
+    )
+    
+    for status, count in inspection_stats.all():
+        raw = status.value if hasattr(status, "value") else status
+        mapped = STATUS_MAPPING.get(raw.lower(), "pending")
+        if mapped in status_counts:
+            status_counts[mapped] += count
+    
+    # Count applications needing inspection (only for work MMDA)
+    if mmda_id == work_mmda_id:
+        needs_inspection_count = await db.execute(
+            select(func.count(PermitApplication.id))
+            .filter(
+                PermitApplication.mmda_id == mmda_id,
+                PermitApplication.status.in_([
+                    ApplicationStatus.APPROVED,
+                    ApplicationStatus.UNDER_REVIEW
+                ]),
+                ~exists().where(Inspection.application_id == PermitApplication.id)
+            )
+        )
+        status_counts["awaiting_inspection"] += needs_inspection_count.scalar_one() or 0
+    
+    return status_counts
+
+def format_mmda_data(mmda: MMDA, status_counts: dict):
+    """Format MMDA data for response"""
+    return {
+        "id": mmda.id,
+        "name": mmda.name,
+        "region": mmda.region,
+        "type": mmda.type,
+        "jurisdiction_boundaries": mmda.jurisdiction_boundaries,
+        "status_counts": status_counts,
+    }
+
+def format_inspector_response(applications: list, personal_permit_ids: set, mmdas_data: list, inspector_mmda_id: int):
+    """Format final response for inspector map"""
+    print("MMDA Data:", mmdas_data)  # Debugging output
+    return {
+        "permits": [
+            {
+                "id": app.id,
+                "project_name": app.project_name,
+                "status": app.status.value if hasattr(app.status, "value") else app.status,
+                "permit_type": {
+                    "id": app.permit_type.id,
+                    "name": app.permit_type.name
+                } if app.permit_type else None,
+                "mmda_id": app.mmda_id,
+                "parcel_geometry": serialize_geom(app.parcel_geometry),
+                "latitude": app.latitude,
+                "longitude": app.longitude,
+                "is_personal": app.id in personal_permit_ids,
+                "inspections": [
+                    {
+                        "id": insp.id,
+                        "status": insp.status.value if hasattr(insp.status, "value") else insp.status,
+                        "scheduled_date": insp.scheduled_date.isoformat() if insp.scheduled_date else None,
+                        "actual_date": insp.actual_date.isoformat() if insp.actual_date else None,
+                        "inspection_type": insp.inspection_type.value if insp.inspection_type else None,
+                        "outcome": insp.outcome.value if insp.outcome else None,
+                        "officer_id": insp.inspection_officer_id
+                    }
+                    for insp in app.inspections
+                ],
+                "needs_inspection": (
+                    app.status in [ApplicationStatus.APPROVED, ApplicationStatus.UNDER_REVIEW]
+                    and len(app.inspections) == 0
+                )
+            }
+            for app in applications
+        ],
+        "mmdas": mmdas_data,
+        "inspector_mmda_id": inspector_mmda_id,  # Add inspector's work MMDA ID
+    }
 
 @router.get("/dashboard/admin-map")
 async def get_admin_dashboard_map(request: Request, db: AsyncSession = Depends(aget_db)):
