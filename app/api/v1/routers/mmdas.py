@@ -383,136 +383,159 @@ async def get_inspection_stats(
     now = datetime.now()
     today_start = datetime.combine(now.date(), time.min)
     today_end = datetime.combine(now.date(), time.max)
+    week_ago = now - timedelta(days=7)
     thirty_days_ago = now - timedelta(days=30)
 
-    # Base filter for inspections this inspector should see (assigned to them)
-    base_filter = and_(
-        Inspection.mmda_id == mmda_id,
+    # Base filters
+    mmda_filter = Inspection.mmda_id == mmda_id
+    inspector_filter = and_(
+        mmda_filter,
         Inspection.inspection_officer_id == user_id
     )
 
-    # 1. Scheduled Today - include inspections with no officer assigned or assigned to current user
-    scheduled_today_result = await db.execute(
+    # 1. Scheduled Today
+    scheduled_today = await db.scalar(
         select(func.count(Inspection.id))
         .where(
-            Inspection.mmda_id == mmda_id,
-            or_(
-                Inspection.inspection_officer_id == user_id,
-                Inspection.inspection_officer_id.is_(None)
-            ),
+            inspector_filter,
             Inspection.scheduled_date.between(today_start, today_end),
             Inspection.status == InspectionStatus.SCHEDULED
         )
-    )
-    scheduled_today = scheduled_today_result.scalar_one() or 0
+    ) or 0
 
-    # 2. Overdue Inspections - include inspections with no officer assigned or assigned to current user
-    overdue_result = await db.execute(
+    # 2. Pending Reports
+    pending_reports = await db.scalar(
         select(func.count(Inspection.id))
         .where(
-            Inspection.mmda_id == mmda_id,
-            or_(
-                Inspection.inspection_officer_id == user_id,
-                Inspection.inspection_officer_id.is_(None)
-            ),
-            Inspection.scheduled_date < now,
-            Inspection.status.in_([
-                InspectionStatus.SCHEDULED,
-                InspectionStatus.PENDING
-            ])
-        )
-    )
-    overdue = overdue_result.scalar_one() or 0
-
-    # 3. Completed Today
-    completed_today_result = await db.execute(
-        select(func.count(Inspection.id))
-        .where(
-            base_filter,
+            inspector_filter,
             Inspection.status == InspectionStatus.COMPLETED,
-            Inspection.actual_date.between(today_start, today_end)
+            Inspection.recommendations.is_(None)
         )
-    )
-    completed_today = completed_today_result.scalar_one() or 0
+    ) or 0
 
-    # 4. Inspector's Completed Today (same as above since base_filter already includes officer check)
-    completed_today_inspector_result = await db.execute(
+    # 3. Violations Found (last 30 days)
+    violations_found = await db.scalar(
         select(func.count(Inspection.id))
         .where(
-            base_filter,
-            Inspection.status == InspectionStatus.COMPLETED,
-            Inspection.actual_date.between(today_start, today_end)
+            mmda_filter,
+            Inspection.actual_date >= thirty_days_ago,
+            Inspection.violations_found != "",
+            Inspection.violations_found.isnot(None)
         )
-    )
-    completed_today_inspector = completed_today_inspector_result.scalar_one() or 0
+    ) or 0
 
-    # 5. Average Inspection Duration (last 30 days)
-    avg_duration_result = await db.execute(
+    # 4. In Progress Inspections
+    in_progress = await db.scalar(
+        select(func.count(Inspection.id))
+        .where(
+            inspector_filter,
+            Inspection.status == InspectionStatus.IN_PROGRESS
+        )
+    ) or 0
+
+    # 5. Completed This Week
+    completed_week = await db.scalar(
+        select(func.count(Inspection.id))
+        .where(
+            inspector_filter,
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date >= week_ago
+        )
+    ) or 0
+
+    mmda_completed_week = await db.scalar(
+        select(func.count(Inspection.id))
+        .where(
+            mmda_filter,  # Only mmda_id, no officer filter
+            Inspection.status == InspectionStatus.COMPLETED,
+            Inspection.actual_date >= week_ago
+        )
+    ) or 0
+
+    # For MMDA average duration (filter out negative durations)
+    mmda_avg_days = await db.scalar(
         select(
             func.avg(
-                func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 3600  # in hours
+                func.greatest(  # Ensure no negative values
+                    func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 86400,
+                    0  # Floor at 0 days
+                )
             )
         )
         .where(
-            base_filter,
+            mmda_filter,
             Inspection.status == InspectionStatus.COMPLETED,
             Inspection.actual_date >= thirty_days_ago,
-            Inspection.scheduled_date.isnot(None)
+            Inspection.scheduled_date.isnot(None),
+            Inspection.actual_date.isnot(None),
+            Inspection.actual_date >= Inspection.scheduled_date  # Only count valid durations
+        )
+    ) or 0
+
+    inspector_avg_days = await db.scalar(
+    select(
+        func.avg(
+            func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 86400
         )
     )
-    avg_duration_hours = round(avg_duration_result.scalar_one() or 0, 1)
-
-    # 6. Inspector's Average Duration (last 30 days)
-    avg_inspector_duration_result = await db.execute(
-        select(
-            func.avg(
-                func.extract('epoch', Inspection.actual_date - Inspection.scheduled_date) / 3600
-            )
-        )
-        .where(
-            base_filter,
-            Inspection.status == InspectionStatus.COMPLETED,
-            Inspection.actual_date >= thirty_days_ago,
-            Inspection.scheduled_date.isnot(None)
-        )
+    .where(
+        inspector_filter,
+        Inspection.status == InspectionStatus.COMPLETED,
+        Inspection.actual_date >= thirty_days_ago,
+        Inspection.scheduled_date.isnot(None),
+        Inspection.actual_date.isnot(None),
+        # Critical: Only include valid durations
+        Inspection.actual_date >= Inspection.scheduled_date
     )
-    avg_inspector_duration_hours = round(avg_inspector_duration_result.scalar_one() or 0, 1)
+    ) or 0
 
-    # 7. Violations Found (last 30 days)
-    violations_result = await db.execute(
+    # # Combine both averages (you might want to return both separately)
+    # avg_duration_days = round((mmda_avg_days + inspector_avg_days) / 2, 1) if (mmda_avg_days and inspector_avg_days) else round(mmda_avg_days or inspector_avg_days, 1)
+
+    # 8. Reinspection Rate
+    total_inspections = await db.scalar(
+        select(func.count(Inspection.id))
+        .where(inspector_filter)
+    ) or 1  # Avoid division by zero
+
+    reinspection_rate = round(await db.scalar(
         select(func.count(Inspection.id))
         .where(
-            base_filter,
-            Inspection.actual_date >= thirty_days_ago,
-            Inspection.violations_found.isnot(None)
+            inspector_filter,
+            Inspection.is_reinspection == True
         )
-    )
-    violations_found = violations_result.scalar_one() or 0
+    ) or 0 / total_inspections * 100, 1)
 
-    # 8. Inspector's Violations Found (last 30 days)
-    inspector_violations_result = await db.execute(
+    # 9. Total Inspections
+    total_inspections = await db.scalar(
+        select(func.count(Inspection.id))
+        .where(inspector_filter)
+    ) or 0
+
+    # 10. Inspector's Violations Found (last 30 days)
+    inspector_violations = await db.scalar(
         select(func.count(Inspection.id))
         .where(
-            base_filter,
+            inspector_filter,
             Inspection.actual_date >= thirty_days_ago,
+            Inspection.violations_found != "",
             Inspection.violations_found.isnot(None)
         )
-    )
-    inspector_violations = inspector_violations_result.scalar_one() or 0
+    ) or 0
 
     return {
         "scheduled_today": scheduled_today,
-        "overdue": overdue,
-        "completed_today": completed_today,
-        "completed_today_inspector": completed_today_inspector,
-        "avg_duration_hours": avg_duration_hours,
-        "avg_inspector_duration_hours": avg_inspector_duration_hours,
+        "pending_reports": pending_reports,
         "violations_found": violations_found,
-        "inspector_violations": inspector_violations,
-        # "department": staff.department.name,
-        # "is_department_head": staff.is_head
+        "in_progress": in_progress,
+        "completed_week": completed_week,
+        "mmda_completed_week": mmda_completed_week,
+        "mmda_avg_duration": mmda_avg_days,  # Convert days to hours for interface
+        "inspector_avg_duration": inspector_avg_days,
+        "reinspection_rate": reinspection_rate,
+        "total_inspections": total_inspections,
+        "inspector_violations": inspector_violations
     }
-
 
 @router.get("/inspections/dashboard/inspector-queue")
 async def get_inspector_queue(

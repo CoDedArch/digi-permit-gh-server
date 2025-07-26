@@ -501,7 +501,7 @@ async def submit_review(application_id: int, request: Request, db: AsyncSession 
 
         inspection = Inspection(
             application_id=application_id,
-            inspection_officer_id=reviewer_user_id,
+            inspection_officer_id=None,
             applicant_id=application.applicant_id,
             mmda_id=application.mmda_id,
             inspection_type=InspectionType.INITIAL,
