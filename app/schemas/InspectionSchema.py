@@ -1,8 +1,10 @@
+from typing_extensions import Literal
 from pydantic import BaseModel, Field, validator
 from datetime import date, datetime, time
-from typing import Optional
+from typing import List, Optional
 
 from app.core.constants import InspectionOutcome, InspectionStatus, InspectionType, PermitType
+from app.models.inspection import InspectionPhoto
 
 class InspectionRequest(BaseModel):
     application_id: int
@@ -90,6 +92,18 @@ class MMDAOut(BaseModel):
     class Config:
         from_attributes = True
 
+class InspectionPhotoOut(BaseModel):
+    id: int
+    inspection_id: Optional[int] = None
+    file_url: str = Field(alias="file_path") 
+    caption: Optional[str]
+    uploaded_at: datetime
+    uploaded_by: OfficerDetailOut # Assuming you have a UserOut model
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True  # Allow both field name and alias
+
 class InspectionDetailOut(BaseModel):
     id: int
     inspection_type: InspectionType
@@ -108,6 +122,7 @@ class InspectionDetailOut(BaseModel):
     application: Optional[ApplicationDetailOut] = None
     inspection_officer: Optional[OfficerDetailOut] = None
     applicant: Optional[ApplicantDetailOut] = None
+    photos: List[InspectionPhotoOut] = []
     mmda: Optional[MMDAOut] = None
 
     @validator('scheduled_time', always=True)
@@ -119,3 +134,46 @@ class InspectionDetailOut(BaseModel):
     class Config:
         from_attributes = True
         use_enum_values = True
+
+
+
+
+class InspectionPhotoIn(BaseModel):
+    file_path: str
+    caption: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+        # Allow both field names
+        populate_by_name = True
+
+class InspectionCompleteIn(BaseModel):
+    status: InspectionStatus = InspectionStatus.COMPLETED  # Default value
+    outcome: InspectionOutcome
+    notes: Optional[str] = None
+    violations_found: Optional[str] = None
+    photos: Optional[List[InspectionPhotoIn]] = None
+    actual_date: Optional[datetime] = None
+
+    @validator('status')
+    def validate_status(cls, v):
+        if v != InspectionStatus.COMPLETED:
+            raise ValueError("Status must be 'completed'")
+        return v
+    
+class InspectorViolationOut(BaseModel):
+    application_id: int
+    application_number: str
+    project_name: str
+    inspection_date: datetime
+    inspection_type: str
+    violations: str
+    photos: List[InspectionPhotoOut]
+    status: str
+    recommendations: Optional[str] = None
+
+class PaginatedViolationsOut(BaseModel):
+    data: List[InspectorViolationOut]
+    total: int
+    page: int
+    per_page: int

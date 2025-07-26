@@ -17,6 +17,7 @@ from app.api.v1.routers.mmdas import router as mmdas_router
 from app.api.v1.routers.payments import router as payment_router
 from app.api.v1.routers.exceptions import router as exceptions_router
 from app.api.v1.routers.metrics import router as metrics_router
+from app.api.v1.routers.violations import router as violations_router
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -144,3 +145,4 @@ app.include_router(mmdas_router, tags=["mmdas"])
 app.include_router(payment_router, tags=["payments"])
 app.include_router(exceptions_router, tags=["exceptions"])
 app.include_router(metrics_router, tags=["metrics"])
+app.include_router(violations_router, tags=["violations"])
